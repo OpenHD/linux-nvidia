@@ -35,7 +35,7 @@ jobs:
 
       - name: Add OpenHD patches
         run: |
-          patch -p1 -i ../patches/openhd_wifi.patch
+          patch -p1 -i patches/openhd_wifi.patch
           cd drivers/net/wireless/realtek/
           git clone https://github.com/openhd/rtl8812au/
           git clone https://github.com/openhd/rtl88x2bu/
