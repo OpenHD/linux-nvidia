@@ -29,13 +29,13 @@ jobs:
       - name: Preparing build
         run: |
           sudo apt install -y build-essential bc
-          wget https://developer.download.nvidia.com/embedded/L4T/r36_Release_v2.0/toolchain/aarch64--glibc--stable-2022.08-1.tar.bz2
-          tar -xjf aarch64--glibc--stable-2022.08-1.tar.bz2
+          wget https://toolchains.bootlin.com/downloads/releases/toolchains/aarch64/tarballs/aarch64--glibc--stable-2020.08-1.tar.bz2
+          tar -xjf aarch64--glibc--stable-*
           ls -a
           mkdir kernel_out
       # Runs a set of commands using the runners shell
       - name: Start building
         run: |
-          export CROSS_COMPILE_AARCH64_PATH=/home/runner/work/linux-nvidia/linux-nvidia/aarch64--glibc--stable-2022.08-1
-          export CROSS_COMPILE_AARCH64=/home/runner/work/linux-nvidia/linux-nvidia/aarch64--glibc--stable-2022.08-1/bin/aarch64-buildroot-linux-gnu-
+          export CROSS_COMPILE_AARCH64_PATH=/home/runner/work/linux-nvidia/linux-nvidia/aarch64--glibc--stable-2020.08-1
+          export CROSS_COMPILE_AARCH64=/home/runner/work/linux-nvidia/linux-nvidia/aarch64--glibc--stable-2020.08-1/bin/aarch64-buildroot-linux-gnu-
           ./nvbuild.sh -o $PWD/kernel_out
