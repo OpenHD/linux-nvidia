@@ -1,0 +1,34 @@
+commit 87dad1a13ceff2ffc2d6e268d8da24d2ddce9340
+Author: Raphael <68374617+raphaelscholle@users.noreply.github.com>
+Date:   Fri Mar 29 05:41:38 2024 +0100
+
+    remove incompatible wifi
+
+diff --git a/kernel/nvidia/drivers/net/wireless/Kconfig b/kernel/nvidia/drivers/net/wireless/Kconfig
+index 1a0f2f620..d90bb8d42 100644
+--- a/kernel/nvidia/drivers/net/wireless/Kconfig
++++ b/kernel/nvidia/drivers/net/wireless/Kconfig
+@@ -1,8 +1,4 @@
+ source "drivers/net/wireless/bcmdhd/Kconfig"
+ source "drivers/net/wireless/bcmdhd_pcie/Kconfig"
+ source "drivers/net/wireless/realtek/rtl8812au/Kconfig"
+-source "drivers/net/wireless/realtek/rtl8814au/Kconfig"
+-source "drivers/net/wireless/realtek/rtl8821au/Kconfig"
+-source "drivers/net/wireless/realtek/rtl8821cu/Kconfig"
+-source "drivers/net/wireless/realtek/rtl8822bu/Kconfig"
+-source "drivers/net/wireless/realtek/rtl8822ce/Kconfig"
++source "drivers/net/wireless/realtek/rtl88x2bu/Kconfig"
+diff --git a/kernel/nvidia/drivers/net/wireless/Makefile b/kernel/nvidia/drivers/net/wireless/Makefile
+index e19a0949b..8359a2fd5 100644
+--- a/kernel/nvidia/drivers/net/wireless/Makefile
++++ b/kernel/nvidia/drivers/net/wireless/Makefile
+@@ -1,8 +1,4 @@
+ obj-$(CONFIG_BCMDHD_SDIO) += bcmdhd/
+ obj-$(CONFIG_BCMDHD_PCIE) += bcmdhd_pcie/
+ obj-$(CONFIG_RTL8812AU) += realtek/rtl8812au/
+-obj-$(CONFIG_RTL8814AU) += realtek/rtl8814au/
+-obj-$(CONFIG_RTL8821AU) += realtek/rtl8821au/
+-obj-$(CONFIG_RTL8821CU) += realtek/rtl8821cu/
+-obj-$(CONFIG_RTL8822BU) += realtek/rtl8822bu/
+-obj-$(CONFIG_RTL8822CE) += realtek/rtl8822ce/
++obj-$(CONFIG_RTL8822BU) += realtek/rtl88x2bu/
