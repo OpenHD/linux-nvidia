@@ -36,6 +36,7 @@ jobs:
       - name: Add OpenHD patches
         run: |
           patch -p1 -i patches/openhd_wifi.patch
+          patch -p1 -i patches/leopardImaging_imx577_driver.patch
           cd kernel/kernel-5.10/drivers/net/wireless/realtek/
           rm -Rf rtl8812au
           rm -Rf rtl8822bu
