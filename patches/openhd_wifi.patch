@@ -32,3 +32,20 @@ index e19a0949b..8359a2fd5 100644
 -obj-$(CONFIG_RTL8822BU) += realtek/rtl8822bu/
 -obj-$(CONFIG_RTL8822CE) += realtek/rtl8822ce/
 +obj-$(CONFIG_RTL8822BU) += realtek/rtl88x2bu/
+diff --git a/kernel/kernel-5.10/arch/arm64/configs/defconfig b/kernel/kernel-5.10/arch/arm64/configs/defconfig
+index 56311d9fd..f22ccd015 100644
+--- a/kernel/kernel-5.10/arch/arm64/configs/defconfig
++++ b/kernel/kernel-5.10/arch/arm64/configs/defconfig
+@@ -616,8 +616,10 @@ CONFIG_RTL8188EE=m
+ CONFIG_RTL8192EE=m
+ CONFIG_RTL8821AE=m
+ CONFIG_RTL8192CU=m
+-CONFIG_RTL8XXXU=m
+-CONFIG_RTL8XXXU_UNTESTED=y
++CONFIG_RTL8XXXU=n
++CONFIG_RTL8XXXU_UNTESTED=n
++CONFIG_RTL8812AU=m
++CONFIG_RTL8822BU=m
+ CONFIG_RSI_91X=m
+ # CONFIG_RSI_COEX is not set
+ CONFIG_CW1200=m
