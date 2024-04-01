@@ -59,7 +59,7 @@ index e5eeaf08e..7584859d7 100644
  
  ifeq ($(CONFIG_PLATFORM_ARM64_RPI), y)
 -include $(TopDIR)/drivers/net/wireless/rtl8812au/hal/phydm/phydm.mk
-+include $(TopDIR)../kernel/kernel-5.10/drivers/net/wireless/rtl8812au/hal/phydm/phydm.mk
++include $(TopDIR)../kernel/kernel-5.10/drivers/net/wireless/realtek/rtl8812au/hal/phydm/phydm.mk
  else
  include $(TopDIR)/hal/phydm/phydm.mk
  endif
