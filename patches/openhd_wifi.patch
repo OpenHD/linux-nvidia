@@ -49,3 +49,17 @@ index 56311d9fd..f22ccd015 100644
  CONFIG_RSI_91X=m
  # CONFIG_RSI_COEX is not set
  CONFIG_CW1200=m
+
+diff --git a/kernel/kernel-5.10/drivers/net/wireless/realtek/rtl8812au/Makefile b/kernel/kernel-5.10/drivers/net/wireless/realtek/rtl8812au/Makefile
+index e5eeaf08e..7584859d7 100644
+--- a/kernel/kernel-5.10/drivers/net/wireless/realtek/rtl8812au/Makefile
++++ b/kernel/kernel-5.10/drivers/net/wireless/realtek/rtl8812au/Makefile
+@@ -305,7 +305,7 @@ _BTC_FILES += hal/btc/halbtc8192e1ant.o \
+ endif
+ 
+ ifeq ($(CONFIG_PLATFORM_ARM64_RPI), y)
+-include $(TopDIR)/drivers/net/wireless/rtl8812au/hal/phydm/phydm.mk
++include $(TopDIR)../kernel/kernel-5.10/drivers/net/wireless/rtl8812au/hal/phydm/phydm.mk
+ else
+ include $(TopDIR)/hal/phydm/phydm.mk
+ endif
