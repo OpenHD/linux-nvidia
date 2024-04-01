@@ -27,7 +27,8 @@ jobs:
 
       - name: Preparing build
         run: |
-          sudo apt install -y build-essential bc
+          sudo apt install -y build-essential bc tree
+          sudo gem install fpm
           wget https://toolchains.bootlin.com/downloads/releases/toolchains/aarch64/tarballs/aarch64--glibc--stable-2020.08-1.tar.bz2
           tar -xjf aarch64--glibc--stable-*
           ls -a
@@ -36,6 +37,7 @@ jobs:
       - name: Add OpenHD patches
         run: |
           patch -p1 -i patches/openhd_wifi.patch
+          patch -p1 -i patches/modules.patch
           #patch -p1 -i patches/openhd_imx577_driver.patch
           cd kernel/kernel-5.10/drivers/net/wireless/realtek/
           rm -Rf rtl8812au
@@ -50,8 +52,24 @@ jobs:
           sed -i 's/CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' Makefile
           sed -i 's/CONFIG_PLATFORM_ARM64_RPI = n/CONFIG_PLATFORM_ARM64_RPI = y/' Makefile
 
-      - name: Start building
+      - name: Building Kernel
         run: |
           export CROSS_COMPILE_AARCH64_PATH=/home/runner/work/linux-nvidia/linux-nvidia/aarch64--glibc--stable-2020.08-1
           export CROSS_COMPILE_AARCH64=/home/runner/work/linux-nvidia/linux-nvidia/aarch64--glibc--stable-2020.08-1/bin/aarch64-buildroot-linux-gnu-
           ./nvbuild.sh -o $PWD/kernel_out
+
+      - name: Packaging Kernel
+        run: |
+              mkdir -p workdir/usr/local/share/openhd/kernel/dts
+              mkdir -p workdir/lib/modules/5.10.192-tegra/
+              cp kernel_out/arch/arm64/boot/Image workdir/usr/local/share/openhd/kernel/kernel.img
+              cp -r kernel_out/arch/arm64/boot/dts/nvidia/* workdir/usr/local/share/openhd/kernel/dts/
+              cp -r kernel_out/openhd/* workdir/
+              VERSION="5.10-$(date -d '+1 hour' +'%m-%d-%Y--%H-%M-%S')"
+              fpm -a arm64 -s dir -t deb -n openhd-linux-nvidia -v "$VERSION" -C workdir -p openhd-linux-nvidia_VERSION_ARCH.deb
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ github.event.repository.name }}
+          path: |
+            *.deb

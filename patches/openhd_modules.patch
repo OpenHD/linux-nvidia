@@ -1,0 +1,36 @@
+commit 0aba71dba889a3a5dd005aa32638913ea6f24302
+Author: Raphael <68374617+raphaelscholle@users.noreply.github.com>
+Date:   Mon Apr 1 01:56:48 2024 +0200
+
+    fix for kernel module compiling
+
+diff --git a/kernel/kernel-5.10/arch/arm64/configs/defconfig b/kernel/kernel-5.10/arch/arm64/configs/defconfig
+index 9b4b26388..56311d9fd 100644
+--- a/kernel/kernel-5.10/arch/arm64/configs/defconfig
++++ b/kernel/kernel-5.10/arch/arm64/configs/defconfig
+@@ -1378,7 +1378,7 @@ CONFIG_CMA_ALIGNMENT=9
+ CONFIG_PRINTK_TIME=y
+ CONFIG_DYNAMIC_DEBUG_CORE=y
+ # CONFIG_SYMBOLIC_ERRNAME is not set
+-CONFIG_DEBUG_INFO=y
++CONFIG_DEBUG_INFO=n
+ CONFIG_FRAME_WARN=4096
+ # CONFIG_SECTION_MISMATCH_WARN_ONLY is not set
+ CONFIG_MAGIC_SYSRQ=y
+diff --git a/nvbuild.sh b/nvbuild.sh
+index cf012826e..74dd0136c 100755
+--- a/nvbuild.sh
++++ b/nvbuild.sh
+@@ -109,6 +109,12 @@ function build_arm64_kernel_sources {
+ 		CROSS_COMPILE="${CROSS_COMPILE_AARCH64}" \
+ 		"${O_OPT[@]}" -j"${NPROC}" \
+ 		--output-sync=target modules
++		
++	"${MAKE_BIN}" -C "${source_dir}" ARCH=arm64 \
++		LOCALVERSION="-tegra" \
++		CROSS_COMPILE="${CROSS_COMPILE_AARCH64}" \
++		"${O_OPT[@]}" -j"${NPROC}" \
++		--output-sync=target modules_install INSTALL_MOD_PATH=$KERNEL_OUT_DIR/openhd/
+ 
+ 	image="${tegra_kernel_out}/arch/arm64/boot/Image"
+ 	if [ ! -f "${image}" ]; then
