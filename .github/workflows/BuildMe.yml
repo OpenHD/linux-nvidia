@@ -37,6 +37,8 @@ jobs:
       - name: Add OpenHD wifi
         run: |
           cd kernel/kernel-5.10/drivers/net/wireless/realtek/
+          ls -a 
+          exit 1
           rm -Rf rtl8812au
           rm -Rf rtl8822bu
           git clone https://github.com/openhd/rtl8812au/ -b nvidia
