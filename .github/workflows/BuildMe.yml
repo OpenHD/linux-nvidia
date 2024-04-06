@@ -39,7 +39,7 @@ jobs:
           cd kernel/kernel-5.10/drivers/net/wireless/realtek/
           rm -Rf rtl8812au
           rm -Rf rtl8822bu
-          git clone https://github.com/openhd/rtl8812au/
+          git clone https://github.com/openhd/rtl8812au/ -b nvidia
           git clone https://github.com/openhd/rtl88x2bu/
           cd rtl8812au
           sed -i 's/CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' Makefile
