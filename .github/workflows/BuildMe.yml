@@ -38,9 +38,8 @@ jobs:
         run: |
           cd kernel/kernel-5.10/drivers/net/wireless/realtek/
           ls -a 
-          exit 1
-          rm -Rf rtl8812au
-          rm -Rf rtl8822bu
+          rm -Rf rtl8xxxu
+          rm -Rf rtw88
           git clone https://github.com/openhd/rtl8812au/ -b nvidia
           git clone https://github.com/openhd/rtl88x2bu/
           cd rtl8812au
