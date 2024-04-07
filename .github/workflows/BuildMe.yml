@@ -37,6 +37,7 @@ jobs:
       - name: Remove Nvidia Wifi
         run: |
           cd kernel/nvidia/drivers/net/wireless/realtek
+          rm -Rf rtl*
           echo "" > Makefile
           echo "" > Kconfig
 
