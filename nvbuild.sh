@@ -92,12 +92,6 @@ function build_arm64_kernel_sources {
 		CROSS_COMPILE="${CROSS_COMPILE_AARCH64}" \
 		"${O_OPT[@]}" "${config_file}"
 
-		echo "__________________________________Debug__________________________________"
-		echo ${KERNEL_OUT_DIR}
-		ls -a ${KERNEL_OUT_DIR}
-		tree ${KERNEL_OUT_DIR}
-    	echo "__________________________________Debug__________________________________"
-
 	"${MAKE_BIN}" -C "${source_dir}" ARCH=arm64 \
 		LOCALVERSION="-tegra" \
 		CROSS_COMPILE="${CROSS_COMPILE_AARCH64}" \
