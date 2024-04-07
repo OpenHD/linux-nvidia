@@ -34,7 +34,13 @@ jobs:
           ls -a
           mkdir kernel_out
 
-      - name: Add OpenHD wifi
+      - name: Remove Nvidia Wifi
+        run: |
+          cd kernel/nvidia/drivers/net/wireless/realtek
+          rm -Rf rtl8812au
+          rm -Rf rtl8822bu
+          rm -Rf rtl88x2bu
+      - name: Add OpenHD Wifi
         run: |
           cd kernel/kernel-5.10/drivers/net/wireless/realtek/
           ls -a 
@@ -49,10 +55,6 @@ jobs:
           cd rtl88x2bu
           sed -i 's/CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' Makefile
           sed -i 's/CONFIG_PLATFORM_ARM64_RPI = n/CONFIG_PLATFORM_ARM64_RPI = y/' Makefile
-          cd kernel/nvidia/drivers/net/wireless/realtek
-          rm -Rf rtl8812au
-          rm -Rf rtl8822bu
-          rm -Rf rtl88x2bu
 
       - name: Add OpenHD patches
         run: |
