@@ -37,9 +37,9 @@ jobs:
       - name: Remove Nvidia Wifi
         run: |
           cd kernel/nvidia/drivers/net/wireless/realtek
-          rm -Rf rtl8812au
-          rm -Rf rtl8822bu
-          rm -Rf rtl88x2bu
+          echo "" > Makefile
+          echo "" > Kconfig
+
       - name: Add OpenHD Wifi
         run: |
           cd kernel/kernel-5.10/drivers/net/wireless/realtek/
