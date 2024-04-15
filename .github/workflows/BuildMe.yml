@@ -37,6 +37,9 @@ jobs:
       - name: Add OpenHD patches
         run: |
           patch -p0 < patches/imx577_20200215.patch
+          rm kernel/nvidia/drivers/media/i2c/imx477.c
+          rm kernel/nvidia/drivers/media/i2c/imx477_mode_tbls.h
+          rm kernel/nvidia/include/media/imx477.h
           patch -p0 < patches/imx577_20200226.patch
 
       - name: Building Kernel
