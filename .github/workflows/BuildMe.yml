@@ -30,7 +30,7 @@ jobs:
           sudo apt install -y build-essential bc tree
           sudo gem install fpm
           wget https://publishing-ie-linaro-org.s3.amazonaws.com/releases/components/toolchain/binaries/7.3-2018.05/aarch64-linux-gnu/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu.tar.xz
-          xz *.xz
+          tar xvf *.xz
           ls -a
           mkdir kernel_out
 
