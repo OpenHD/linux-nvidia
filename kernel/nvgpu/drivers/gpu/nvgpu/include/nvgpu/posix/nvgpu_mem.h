@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2019, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -20,26 +20,13 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef NVGPU_POSIX_NVGPU_MEM_H
-#define NVGPU_POSIX_NVGPU_MEM_H
+#ifndef __NVGPU_POSIX_NVGPU_MEM_H__
+#define __NVGPU_POSIX_NVGPU_MEM_H__
 
 struct nvgpu_mem_priv {
-	struct nvgpu_sgt *sgt;
+	/*
+	 * Eventually this will require an implementation using nvmap.
+	 */
 };
 
-struct nvgpu_mem;
-struct nvgpu_mem_sgl;
-
-struct nvgpu_mem_sgl *nvgpu_mem_sgl_posix_create_from_list(struct gk20a *g,
-				struct nvgpu_mem_sgl *sgl_list, u32 nr_sgls,
-				u64 *total_size);
-void nvgpu_mem_sgl_free(struct gk20a *g, struct nvgpu_mem_sgl *sgl);
-struct nvgpu_sgt *nvgpu_mem_sgt_posix_create_from_list(struct gk20a *g,
-				struct nvgpu_mem_sgl *sgl_list, u32 nr_sgls,
-				u64 *total_size);
-int nvgpu_mem_posix_create_from_list(struct gk20a *g, struct nvgpu_mem *mem,
-				struct nvgpu_mem_sgl *sgl_list, u32 nr_sgls);
-int __nvgpu_mem_create_from_phys(struct gk20a *g, struct nvgpu_mem *dest,
-				  u64 src_phys, int nr_pages);
-
-#endif /* NVGPU_POSIX_NVGPU_MEM_H */
+#endif

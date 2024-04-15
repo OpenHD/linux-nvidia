@@ -35,17 +35,12 @@ static void __core_print_file(struct unit_fw *fw, FILE *filp,
 			      const char *prefix, const char *msg,
 			      const char *color)
 {
-	const char *reset = C_RESET;
-
-	if (color == NULL || args(fw)->no_color) {
+	if (color == NULL || args(fw)->no_color)
 		color = "";
-		reset = "";
-	}
 
 	fprintf(filp, "[%s%s%s] %s%s%s",
-		color, prefix, reset,
-		color, msg, reset);
-	fflush(stdout);
+		color, prefix, C_RESET,
+		color, msg, C_RESET);
 }
 
 __attribute__((format (printf, 3, 4)))

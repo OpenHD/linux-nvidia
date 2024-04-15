@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2021, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2017-2018, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -27,7 +27,6 @@
 #include <nvgpu/sim.h>
 #include <nvgpu/io.h>
 #include <nvgpu/gk20a.h>
-#include <nvgpu/soc.h>
 
 #include "os_linux.h"
 #include "module.h"
@@ -37,16 +36,9 @@ static bool _nvgpu_pci_is_simulation(struct gk20a *g, u32 sim_base)
 	u32 cfg;
 	bool is_simulation = false;
 
-	if (nvgpu_platform_is_silicon(g)) {
-		return is_simulation;
-	}
-
 	cfg = nvgpu_readl(g, sim_base + sim_config_r());
-
-	if ((sim_config_simulation_v(cfg) == sim_config_simulation_fmodel_v())
-	    || (sim_config_mode_v(cfg) == sim_config_mode_enabled_v())) {
+	if (sim_config_mode_v(cfg) == sim_config_mode_enabled_v())
 		is_simulation = true;
-	}
 
 	return is_simulation;
 }
@@ -54,8 +46,11 @@ static bool _nvgpu_pci_is_simulation(struct gk20a *g, u32 sim_base)
 void nvgpu_remove_sim_support_linux_pci(struct gk20a *g)
 {
 	struct sim_nvgpu_linux *sim_linux;
+	bool is_simulation;
 
-	if (!nvgpu_is_enabled(g, NVGPU_IS_FMODEL)) {
+	is_simulation = _nvgpu_pci_is_simulation(g, sim_r());
+
+	if (!is_simulation) {
 		return;
 	}
 
@@ -65,9 +60,9 @@ void nvgpu_remove_sim_support_linux_pci(struct gk20a *g)
 	}
 	sim_linux = container_of(g->sim, struct sim_nvgpu_linux, sim);
 
-	if (g->sim->regs) {
+	if (sim_linux->regs) {
 		sim_writel(g->sim, sim_config_r(), sim_config_mode_disabled_v());
-		g->sim->regs = 0U;
+		sim_linux->regs = NULL;
 	}
 	nvgpu_kfree(g, sim_linux);
 	g->sim = NULL;
@@ -75,12 +70,13 @@ void nvgpu_remove_sim_support_linux_pci(struct gk20a *g)
 
 int nvgpu_init_sim_support_linux_pci(struct gk20a *g)
 {
+	struct nvgpu_os_linux *l = nvgpu_os_linux_from_gk20a(g);
 	struct sim_nvgpu_linux *sim_linux;
 	int err = -ENOMEM;
 	bool is_simulation;
 
 	is_simulation = _nvgpu_pci_is_simulation(g, sim_r());
-	nvgpu_set_enabled(g, NVGPU_IS_FMODEL, is_simulation);
+	__nvgpu_set_enabled(g, NVGPU_IS_FMODEL, is_simulation);
 
 	if (!is_simulation)
 		return 0;
@@ -90,7 +86,7 @@ int nvgpu_init_sim_support_linux_pci(struct gk20a *g)
 		return err;
 	g->sim = &sim_linux->sim;
 	g->sim->g = g;
-	g->sim->regs = g->regs + sim_r();
+	sim_linux->regs = l->regs + sim_r();
 	sim_linux->remove_support_linux = nvgpu_remove_sim_support_linux_pci;
 
 	return 0;

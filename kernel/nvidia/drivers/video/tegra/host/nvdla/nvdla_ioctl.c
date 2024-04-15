@@ -1,7 +1,7 @@
 /*
  * NVDLA IOCTL for T194
  *
- * Copyright (c) 2016-2022, NVIDIA Corporation.  All rights reserved.
+ * Copyright (c) 2016-2021, NVIDIA Corporation.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -16,20 +16,28 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <linux/arm64-barrier.h>
 #include <linux/fs.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/dma-mapping.h>
 #include <linux/uaccess.h>
 
-#include "nvdla.h"
-#include "dla_queue.h"
-#include "nvdla_buffer.h"
-#include "nvdla_debug.h"
+#include "dev.h"
+#include "bus_client.h"
+#include "nvhost_acm.h"
+
+#include "flcn/flcn.h"
+#include "flcn/hw_flcn.h"
+
+#include "t194/t194.h"
+
+
+#include "nvdla/nvdla.h"
+#include "nvdla/dla_queue.h"
+#include "nvdla/nvdla_buffer.h"
+#include "nvdla/nvdla_debug.h"
 
 #include <uapi/linux/nvdev_fence.h>
-#include <uapi/linux/nvhost_ioctl.h>
 #include <uapi/linux/nvhost_nvdla_ioctl.h>
 #include "dla_os_interface.h"
 
@@ -160,7 +168,9 @@ fail_to_send_fence:
 static int nvdla_pin(struct nvdla_private *priv, void *arg)
 {
 	struct nvdla_mem_share_handle handles[MAX_NVDLA_PIN_BUFFERS];
+	struct dma_buf *dmabufs[MAX_NVDLA_PIN_BUFFERS];
 	int err = 0;
+	int i = 0;
 	struct nvdla_pin_unpin_args *buf_list =
 			(struct nvdla_pin_unpin_args *)arg;
 	u32 count;
@@ -195,10 +205,21 @@ static int nvdla_pin(struct nvdla_private *priv, void *arg)
 		goto nvdla_buffer_cpy_err;
 	}
 
-	spec_bar(); /* break_spec_p#5_1 */
+	/* get the dmabuf pointer from the fd handle */
+	for (i = 0; i < count; i++) {
+		dmabufs[i] = dma_buf_get(handles[i].share_id);
+		if (IS_ERR_OR_NULL(dmabufs[i])) {
+			err = -EFAULT;
+			goto fail_to_get_dma_buf;
+		}
+	}
 
-	err = nvdla_buffer_pin(priv->buffers, handles, count);
+	err = nvdla_buffer_pin(priv->buffers, dmabufs, count);
 
+fail_to_get_dma_buf:
+	count = i;
+	for (i = 0; i < count; i++)
+		dma_buf_put(dmabufs[i]);
 nvdla_buffer_cpy_err:
 fail_to_get_val_cnt:
 fail_to_get_val_arg:
@@ -208,7 +229,9 @@ fail_to_get_val_arg:
 static int nvdla_unpin(struct nvdla_private *priv, void *arg)
 {
 	struct nvdla_mem_share_handle handles[MAX_NVDLA_PIN_BUFFERS];
+	struct dma_buf *dmabufs[MAX_NVDLA_PIN_BUFFERS];
 	int err = 0;
+	int i = 0;
 	struct nvdla_pin_unpin_args *buf_list =
 			(struct nvdla_pin_unpin_args *)arg;
 	u32 count;
@@ -243,9 +266,18 @@ static int nvdla_unpin(struct nvdla_private *priv, void *arg)
 		goto nvdla_buffer_cpy_err;
 	}
 
-	spec_bar(); /* break_spec_p#5_1 */
+	/* get the dmabuf pointer and clean valid ones */
+	for (i = 0; i < count; i++) {
+		dmabufs[i] = dma_buf_get(handles[i].share_id);
+		if (IS_ERR_OR_NULL(dmabufs[i]))
+			continue;
+	}
 
-	nvdla_buffer_unpin(priv->buffers, handles, count);
+	nvdla_buffer_unpin(priv->buffers, dmabufs, count);
+
+	count = i;
+	for (i = 0; i < count; i++)
+		dma_buf_put(dmabufs[i]);
 
 nvdla_buffer_cpy_err:
 fail_to_get_val_cnt:
@@ -258,8 +290,6 @@ static int nvdla_ping(struct platform_device *pdev,
 {
 	struct nvdla_cmd_mem_info ping_cmd_mem_info;
 	struct nvdla_cmd_data cmd_data;
-	struct nvhost_device_data *pdata = platform_get_drvdata(pdev);
-	struct nvdla_device *nvdla_dev = pdata->private_data;
 	u32 *ping_va;
 	int err = 0;
 
@@ -276,14 +306,6 @@ static int nvdla_ping(struct platform_device *pdev,
 		err = -ENODEV;
 		goto fail_to_on;
 	}
-
-	if (nvdla_dev == NULL) {
-		nvdla_dbg_err(pdev, "Invalid nvdla device\n");
-		err = -EINVAL;
-		goto fail_to_get_nvdla_dev;
-	}
-
-	mutex_lock(&nvdla_dev->ping_lock);
 
 	/* assign ping cmd buffer */
 	err = nvdla_get_cmd_memory(pdev, &ping_cmd_mem_info);
@@ -323,8 +345,6 @@ static int nvdla_ping(struct platform_device *pdev,
 fail_cmd:
 	nvdla_put_cmd_memory(pdev, ping_cmd_mem_info.index);
 fail_to_alloc:
-	mutex_unlock(&nvdla_dev->ping_lock);
-fail_to_get_nvdla_dev:
 	nvhost_module_idle(pdev);
 fail_to_on:
 fail_to_get_val_arg:
@@ -442,16 +462,11 @@ static int nvdla_send_emu_signal_fences(struct nvdla_emu_task *task,
 					info.id, info.thresh);
 
 			/* create fence name format example: nvdla0_1_fence */
-			err = snprintf(fence_name, sizeof(fence_name),
+			snprintf(fence_name, sizeof(fence_name),
 				"%s_%d_%d_prefence", dev_name(&dla_pdev->dev),
 				task->prefences[i].syncpoint_index, i);
-			if (err < 0) {
-				nvdla_dbg_err(dla_pdev,
-					"encoding error: %d\n", err);
-				goto fail;
-			}
 
-			err = nvhost_fence_create_fd(host_pdev,
+			err = nvhost_sync_create_fence_fd(host_pdev,
 				&info, 1, fence_name,
 				&task->prefences[i].sync_fd);
 
@@ -462,7 +477,6 @@ static int nvdla_send_emu_signal_fences(struct nvdla_emu_task *task,
 			}
 		}
 	}
-	spec_bar(); /* break_spec_p#5_1 */
 
 	nvdla_dbg_fn(dla_pdev, "copy prefences to user");
 	/* send pre fences */
@@ -489,16 +503,11 @@ static int nvdla_send_emu_signal_fences(struct nvdla_emu_task *task,
 					info.id, info.thresh);
 
 			/* create fence name format example: nvdla0_1_fence */
-			err = snprintf(fence_name, sizeof(fence_name),
+			snprintf(fence_name, sizeof(fence_name),
 				"%s_%d_%d_postfence", dev_name(&dla_pdev->dev),
 				task->postfences[i].syncpoint_index, i);
-			if (err < 0) {
-				nvdla_dbg_err(dla_pdev,
-					"encoding error: %d\n", err);
-				goto fail;
-			}
 
-			err = nvhost_fence_create_fd(host_pdev,
+			err = nvhost_sync_create_fence_fd(host_pdev,
 				&info, 1, fence_name,
 				&task->postfences[i].sync_fd);
 
@@ -509,7 +518,6 @@ static int nvdla_send_emu_signal_fences(struct nvdla_emu_task *task,
 			}
 		}
 	}
-	spec_bar(); /* break_spec_p#5_1 */
 
 	nvdla_dbg_fn(dla_pdev, "copy postfences to user");
 	/* send post fences */
@@ -556,16 +564,11 @@ static int nvdla_update_signal_fences(struct nvdla_task *task,
 					info.id, info.thresh);
 
 			/* create fence name format example: nvdla0_1_fence */
-			err = snprintf(fence_name, sizeof(fence_name),
+			snprintf(fence_name, sizeof(fence_name),
 				"%s_%d_%d_prefence", dev_name(&dla_pdev->dev),
 				task->prefences[i].syncpoint_index, i);
-			if (err < 0) {
-				nvdla_dbg_err(dla_pdev,
-					"encoding error: %d\n", err);
-				goto fail;
-			}
 
-			err = nvhost_fence_create_fd(host_pdev,
+			err = nvhost_sync_create_fence_fd(host_pdev,
 				&info, 1, fence_name,
 				&task->prefences[i].sync_fd);
 
@@ -576,7 +579,6 @@ static int nvdla_update_signal_fences(struct nvdla_task *task,
 			}
 		}
 	}
-	spec_bar(); /* break_spec_p#5_1 */
 
 	nvdla_dbg_fn(dla_pdev, "copy prefences to user");
 	/* copy pre fences */
@@ -603,16 +605,11 @@ static int nvdla_update_signal_fences(struct nvdla_task *task,
 					info.id, info.thresh);
 
 			/* create fence name format example: nvdla0_1_fence */
-			err = snprintf(fence_name, sizeof(fence_name),
+			snprintf(fence_name, sizeof(fence_name),
 				"%s_%d_%d_postfence", dev_name(&dla_pdev->dev),
 				task->postfences[i].syncpoint_index, i);
-			if (err < 0) {
-				nvdla_dbg_err(dla_pdev,
-					"encoding error: %d\n", err);
-				goto fail;
-			}
 
-			err = nvhost_fence_create_fd(host_pdev,
+			err = nvhost_sync_create_fence_fd(host_pdev,
 				&info, 1, fence_name,
 				&task->postfences[i].sync_fd);
 
@@ -623,7 +620,6 @@ static int nvdla_update_signal_fences(struct nvdla_task *task,
 			}
 		}
 	}
-	spec_bar(); /* break_spec_p#5_1 */
 
 	nvdla_dbg_fn(dla_pdev, "copy postfences to user");
 	/* copy post fences */
@@ -695,10 +691,10 @@ static int nvdla_val_task_submit_input(struct nvdla_ioctl_submit_task *in_task)
 				in_task->num_addresses);
 		return -EINVAL;
 	}
-	if (in_task->num_addresses > MAX_NVDLA_BUFFERS_PER_TASK) {
+	if (in_task->num_addresses > NVDLA_MAX_BUFFERS_PER_TASK) {
 		pr_err("num addresses[%u] crossing expected[%d]\n",
 			in_task->num_addresses,
-			MAX_NVDLA_BUFFERS_PER_TASK);
+			NVDLA_MAX_BUFFERS_PER_TASK);
 		return -EINVAL;
 	}
 
@@ -719,6 +715,7 @@ static int nvdla_fill_task(struct nvdla_queue *queue,
 	 /* initialize task parameters */
 	task->queue = queue;
 	task->buffers = buffers;
+	task->sp = &nvhost_get_host(pdev)->syncpt;
 
 	err = nvdla_val_task_submit_input(local_task);
 	if (err) {
@@ -856,7 +853,6 @@ static void nvdla_dump_task(struct nvdla_task *task)
 				i, task->memory_handles[i].handle,
 				task->memory_handles[i].offset);
 	}
-	spec_bar(); /* break_spec_p#5_1 */
 }
 
 static int nvdla_emu_task_submit(struct nvdla_private *priv, void *arg)
@@ -864,10 +860,10 @@ static int nvdla_emu_task_submit(struct nvdla_private *priv, void *arg)
 	struct nvdla_submit_args *args =
 			(struct nvdla_submit_args *)arg;
 	struct nvdla_ioctl_emu_submit_task __user *user_tasks;
-	struct nvdla_ioctl_emu_submit_task local_task;
+	struct nvdla_ioctl_emu_submit_task local_tasks[MAX_NVDLA_TASKS_PER_SUBMIT];
 	struct platform_device *pdev;
 	struct nvdla_queue *queue;
-	struct nvdla_emu_task *task;
+	struct nvdla_emu_task task;
 	int err = 0, i = 0;
 	u32 num_tasks;
 
@@ -881,6 +877,9 @@ static int nvdla_emu_task_submit(struct nvdla_private *priv, void *arg)
 
 	nvdla_dbg_fn(pdev, "inside emulator task submit");
 
+	task.queue = queue;
+	task.sp = &nvhost_get_host(pdev)->syncpt;
+
 	user_tasks = (struct nvdla_ioctl_emu_submit_task __user *)
 			(uintptr_t)args->tasks;
 	if (!user_tasks)
@@ -892,60 +891,40 @@ static int nvdla_emu_task_submit(struct nvdla_private *priv, void *arg)
 
 	nvdla_dbg_info(pdev, "num of emulator tasks [%d]", num_tasks);
 
-	task = kmalloc(sizeof(*task), GFP_KERNEL);
-	if (!task)
-		return -ENOMEM;
-
-	task->queue = queue;
+	/* IOCTL copy descriptors*/
+	if (copy_from_user(local_tasks, (void __user *)user_tasks,
+			(num_tasks * sizeof(*user_tasks)))) {
+		err = -EFAULT;
+		goto exit;
+	}
+	nvdla_dbg_info(pdev, "copy of user tasks done");
 
 	for (i = 0; i < num_tasks; i++) {
-		/* IOCTL copy descriptor */
-		if (copy_from_user(&local_task, (void __user *)&user_tasks[i],
-				   sizeof(*user_tasks))) {
-			err = -EFAULT;
-			goto exit;
-		}
 
 		nvdla_dbg_info(pdev, "submit [%d]th task", i + 1);
 
-		if (local_task.num_prefences > MAX_NVDLA_EMU_PREFENCES_PER_TASK) {
-			nvdla_dbg_err(pdev, "#prefences[%u] > expected[%d]\n",
-				local_task.num_prefences,
-				MAX_NVDLA_EMU_PREFENCES_PER_TASK);
-			err = -EINVAL;
-			goto exit;
-		}
-
-		if (local_task.num_postfences > MAX_NVDLA_EMU_POSTFENCES_PER_TASK) {
-			nvdla_dbg_err(pdev, "#postfences[%u] > expected[%d]\n",
-				local_task.num_postfences,
-				MAX_NVDLA_EMU_POSTFENCES_PER_TASK);
-			err = -EINVAL;
-			goto exit;
-		}
-
-		task->num_prefences = local_task.num_prefences;
-		task->num_postfences = local_task.num_postfences;
+		task.num_prefences = local_tasks[i].num_prefences;
+		task.num_postfences = local_tasks[i].num_postfences;
 
 		/* get pre fences */
-		if (copy_from_user(task->prefences,
-			(void __user *)local_task.prefences,
-			(task->num_prefences * sizeof(struct nvdev_fence)))) {
+		if (copy_from_user(task.prefences,
+			(void __user *)local_tasks[i].prefences,
+			(task.num_prefences * sizeof(struct nvdev_fence)))) {
 			err = -EFAULT;
 			nvdla_dbg_err(pdev, "failed to copy prefences");
 			goto exit;
 		}
 
 		/* get post fences */
-		if (copy_from_user(task->postfences,
-			(void __user *)local_task.postfences,
-			(task->num_postfences * sizeof(struct nvdev_fence)))) {
+		if (copy_from_user(task.postfences,
+			(void __user *)local_tasks[i].postfences,
+			(task.num_postfences * sizeof(struct nvdev_fence)))) {
 			err = -EFAULT;
 			nvdla_dbg_err(pdev, "failed to copy postfences");
 			goto exit;
 		}
 
-		err = nvdla_emulator_submit(queue, task);
+		err = nvdla_emulator_submit(queue, &task);
 		if (err) {
 			nvdla_dbg_err(pdev, "fail to submit task: %d", i + 1);
 			goto exit;
@@ -953,19 +932,16 @@ static int nvdla_emu_task_submit(struct nvdla_private *priv, void *arg)
 		nvdla_dbg_info(pdev, "task[%d] submitted", i + 1);
 
 		/* send signal fences to user */
-		err = nvdla_send_emu_signal_fences(task, &local_task);
+		err = nvdla_send_emu_signal_fences(&task, local_tasks + i);
 		if (err) {
 			nvdla_dbg_err(pdev, "fail to send sig fence%d", i + 1);
 			goto exit;
 		}
 		nvdla_dbg_info(pdev, "signal fences of task[%d] sent", i + 1);
 	}
-	spec_bar(); /* break_spec_p#5_1 */
 	nvdla_dbg_fn(pdev, "Emulator task submitted, done!");
 
 exit:
-	kfree(task);
-
 	return 0;
 }
 
@@ -1038,7 +1014,7 @@ static int nvdla_submit(struct nvdla_private *priv, void *arg)
 	struct nvdla_submit_args *args =
 			(struct nvdla_submit_args *)arg;
 	struct nvdla_ioctl_submit_task __user *user_tasks;
-	struct nvdla_ioctl_submit_task local_task;
+	struct nvdla_ioctl_submit_task local_tasks[MAX_NVDLA_TASKS_PER_SUBMIT];
 	struct platform_device *pdev;
 	struct nvdla_queue *queue;
 	struct nvdla_buffers *buffers;
@@ -1072,14 +1048,15 @@ static int nvdla_submit(struct nvdla_private *priv, void *arg)
 	bypass_exec = ((args->flags & NVDLA_SUBMIT_FLAGS_BYPASS_EXEC) != 0U);
 	nvdla_dbg_info(pdev, "submit flags [%u]", args->flags);
 
-	for (i = 0; i < num_tasks; i++) {
-		/* IOCTL copy descriptor */
-		if (copy_from_user(&local_task, (void __user *)&user_tasks[i],
-				   sizeof(*user_tasks))) {
-			err = -EFAULT;
-			goto fail_to_copy_task;
-		}
+	/* IOCTL copy descriptors*/
+	if (copy_from_user(local_tasks, (void __user *)user_tasks,
+			(num_tasks * sizeof(*user_tasks)))) {
+		err = -EFAULT;
+		goto fail_to_copy_task;
+	}
+	nvdla_dbg_info(pdev, "copy of user tasks done");
 
+	for (i = 0; i < num_tasks; i++) {
 		nvdla_dbg_info(pdev, "submit [%d]th task", i + 1);
 
 		err = nvdla_get_task_mem(queue, &task);
@@ -1093,7 +1070,7 @@ static int nvdla_submit(struct nvdla_private *priv, void *arg)
 		kref_init(&task->ref);
 
 		/* fill local task param from user args */
-		err = nvdla_fill_task(queue, buffers, &local_task, task);
+		err = nvdla_fill_task(queue, buffers, local_tasks + i, task);
 		if (err) {
 			nvdla_dbg_err(pdev, "failed to fill task[%d]", i + 1);
 			goto fail_to_fill_task;
@@ -1126,7 +1103,7 @@ static int nvdla_submit(struct nvdla_private *priv, void *arg)
 		nvdla_dbg_info(pdev, "task[%d] got fences", i + 1);
 
 		/* update fences to user */
-		err = nvdla_update_signal_fences(task, &local_task);
+		err = nvdla_update_signal_fences(task, local_tasks + i);
 		if (err) {
 			nvdla_dbg_err(pdev, "fail update postfence%d", i + 1);
 			goto fail_to_update_postfences;
@@ -1159,7 +1136,8 @@ fail_to_get_fences:
 fail_to_fill_task_desc:
 fail_to_fill_task:
 	/* Remove ref corresponding task submit preparation */
-	kref_put(&task->ref, task_free);
+	if (task != NULL)
+		kref_put(&task->ref, task_free);
 
 	/*TODO: traverse list in reverse and delete jobs */
 fail_to_get_task_mem:
@@ -1172,19 +1150,8 @@ static long nvdla_ioctl(struct file *file, unsigned int cmd,
 {
 	struct nvdla_private *priv = file->private_data;
 	struct platform_device *pdev = priv->pdev;
-	u8 buf[NVDLA_IOCTL_MAX_ARG_SIZE] __aligned(sizeof(u64)) = { 0U };
+	u8 buf[NVDLA_IOCTL_MAX_ARG_SIZE] __aligned(sizeof(u64));
 	int err = 0;
-
-#ifdef CONFIG_PM
-	struct nvhost_device_data *pdata = platform_get_drvdata(pdev);
-	struct nvdla_device *nvdla_dev = pdata->private_data;
-
-	/* If suspended, mark the resource as unavailable. */
-	if (nvdla_dev->is_suspended) {
-		nvdla_dbg_err(pdev, "Module in suspended state\n");
-		return -EAGAIN;
-	}
-#endif
 
 	/* check for valid IOCTL cmd */
 	if ((_IOC_TYPE(cmd) != NVHOST_NVDLA_IOCTL_MAGIC) ||
@@ -1282,7 +1249,7 @@ static int nvdla_open(struct inode *inode, struct file *file)
 		if (clock->moduleid ==
 			NVHOST_MODULE_ID_EXTERNAL_MEMORY_CONTROLLER) {
 			err = nvhost_module_set_rate(pdev, priv, UINT_MAX,
-				index, clock->request_type);
+				index, clock->bwmgr_request_type);
 			if (err < 0)
 				goto err_set_emc_rate;
 			break;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2023, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2015-2020, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -302,7 +302,6 @@ struct ttcan_controller {
 	void __iomem *xbase;    /* extra registers are mapped */
 	void __iomem *mram_vbase;
 	size_t mram_base;
-	u32    mram_size;
 	u8 tx_buf_dlc[32];
 	u32 id;
 	u32 proto_state;
@@ -444,7 +443,6 @@ unsigned int ttcan_read_txevt_fifo(struct ttcan_controller *ttcan);
 
 unsigned int ttcan_read_rx_fifo0(struct ttcan_controller *ttcan);
 unsigned int ttcan_read_rx_fifo1(struct ttcan_controller *ttcan);
-unsigned int ttcan_read_rx_fifo(struct ttcan_controller *ttcan);
 unsigned int ttcan_read_hp_mesgs(struct ttcan_controller *ttcan,
 					struct ttcanfd_frame *ttcanfd);
 
@@ -491,9 +489,7 @@ void ttcan_set_time_stamp_conf(struct ttcan_controller *ttcan,
 				u16 timer_prescalar,
 				enum ttcan_timestamp_source time_type);
 void ttcan_set_txevt_fifo_conf(struct ttcan_controller *ttcan);
-void ttcan_set_xtd_mask_add(struct ttcan_controller *ttcan, int extid_mask);
 /* Mesg RAM partition */
-void ttcan_mesg_ram_init(struct ttcan_controller *ttcan);
 int ttcan_mesg_ram_config(struct ttcan_controller *ttcan,
 		u32 *arr, u32 *tx_conf , u32 *rx_conf);
 int ttcan_controller_init(struct ttcan_controller *ttcan, u32 irq_flag,
@@ -506,8 +502,6 @@ u32 ttcan_read_tx_cancelled_reg(struct ttcan_controller *ttcan);
 u32 ttcan_read_psr(struct ttcan_controller *ttcan);
 int ttcan_read_rx_buffer(struct ttcan_controller *ttcan);
 int ttcan_set_bitrate(struct ttcan_controller *ttcan);
-int ttcan_tx_req_pending(struct ttcan_controller *ttcan);
-int ttcan_tx_buff_req_pending(struct ttcan_controller *ttcan, u8 index);
 
 void ttcan_disable_auto_retransmission(
 		struct ttcan_controller *ttcan,
@@ -523,8 +517,6 @@ void ttcan_ir_write(struct ttcan_controller *ttcan, u32 value);
 void ttcan_ttir_write(struct ttcan_controller *ttcan, u32 value);
 u32 ttcan_read_ir(struct ttcan_controller *ttcan);
 u32 ttcan_read_ttir(struct ttcan_controller *ttcan);
-void ttcan_ier_write(struct ttcan_controller *ttcan, u32 val);
-void ttcan_ttier_write(struct ttcan_controller *ttcan, u32 val);
 void ttcan_set_intrpts(struct ttcan_controller *ttcan, int enable);
 
 /* TTCAN APIS */

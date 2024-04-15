@@ -1,2 +1,1 @@
-# Choose this option if you have an SoC with integrated Nvidia GPU IP.
-obj-m += nvgpu/
+obj-$(CONFIG_GK20A) += nvgpu/

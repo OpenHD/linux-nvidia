@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2016-2017, NVIDIA CORPORATION.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -23,33 +23,14 @@
 #ifndef NVGPU_COMMON_H
 #define NVGPU_COMMON_H
 
-/**
- * @file
- *
- * @addtogroup unit-common-nvgpu
- * @{
- */
+struct gk20a;
+struct class;
 
-#ifdef CONFIG_NVGPU_NON_FUSA
-/**
- * @brief Restart driver as implemented for OS.
- *
- * @param cmd [in]	Pointer to command to execute before restart, if
- *			possible. Pass NULL for no command.
- *
- * This is a very OS-dependent interface.
- * - On Linux, this will request the kernel to execute the command if not NULL,
- *   then the kernel will reboot the OS.
- * - On QNX, this simply calls BUG() which will restart the driver.
- */
+int nvgpu_probe(struct gk20a *g,
+		const char *debugfs_symlink,
+		const char *interface_name,
+		struct class *class);
+
 void nvgpu_kernel_restart(void *cmd);
-#endif
 
-#ifdef NVGPU_UNITTEST_FAULT_INJECTION_ENABLEMENT
-struct nvgpu_posix_fault_inj *nvgpu_nvgpu_get_fault_injection(void);
-#endif
-
-/**
- * @}
- */
 #endif

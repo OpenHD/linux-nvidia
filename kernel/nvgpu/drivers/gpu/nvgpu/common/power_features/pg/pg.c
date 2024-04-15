@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2019, NVIDIA CORPORATION.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -21,10 +21,7 @@
  */
 
 #include <nvgpu/gk20a.h>
-#ifdef CONFIG_NVGPU_LS_PMU
 #include <nvgpu/pmu.h>
-#include <nvgpu/pmu/pmu_pg.h>
-#endif
 #include <nvgpu/power_features/pg.h>
 
 bool nvgpu_pg_elpg_is_enabled(struct gk20a *g)
@@ -42,44 +39,40 @@ bool nvgpu_pg_elpg_is_enabled(struct gk20a *g)
 int nvgpu_pg_elpg_enable(struct gk20a *g)
 {
 	int err = 0;
-#ifdef CONFIG_NVGPU_LS_PMU
+
+	nvgpu_log_fn(g, " ");
 
 	if (!g->can_elpg) {
 		return 0;
 	}
 
-	nvgpu_log_fn(g, " ");
-
-	g->ops.gr.init.wait_initialized(g);
+	gk20a_gr_wait_initialized(g);
 
 	nvgpu_mutex_acquire(&g->cg_pg_lock);
 	if (g->elpg_enabled) {
 		err = nvgpu_pmu_pg_global_enable(g, true);
 	}
 	nvgpu_mutex_release(&g->cg_pg_lock);
-#endif
 	return err;
 }
 
 int nvgpu_pg_elpg_disable(struct gk20a *g)
 {
 	int err = 0;
-#ifdef CONFIG_NVGPU_LS_PMU
+
+	nvgpu_log_fn(g, " ");
 
 	if (!g->can_elpg) {
 		return 0;
 	}
 
-	nvgpu_log_fn(g, " ");
-
-	g->ops.gr.init.wait_initialized(g);
+	gk20a_gr_wait_initialized(g);
 
 	nvgpu_mutex_acquire(&g->cg_pg_lock);
 	if (g->elpg_enabled) {
 		err = nvgpu_pmu_pg_global_enable(g, false);
 	}
 	nvgpu_mutex_release(&g->cg_pg_lock);
-#endif
 	return err;
 }
 
@@ -94,7 +87,7 @@ int nvgpu_pg_elpg_set_elpg_enabled(struct gk20a *g, bool enable)
 		return 0;
 	}
 
-	g->ops.gr.init.wait_initialized(g);
+	gk20a_gr_wait_initialized(g);
 
 	nvgpu_mutex_acquire(&g->cg_pg_lock);
 	if (enable) {
@@ -111,57 +104,9 @@ int nvgpu_pg_elpg_set_elpg_enabled(struct gk20a *g, bool enable)
 	if (!change_mode) {
 		goto done;
 	}
-#ifdef CONFIG_NVGPU_LS_PMU
+
 	err = nvgpu_pmu_pg_global_enable(g, enable);
-#endif
 done:
 	nvgpu_mutex_release(&g->cg_pg_lock);
 	return err;
 }
-
-int nvgpu_pg_elpg_ms_enable(struct gk20a *g)
-{
-	int err = 0;
-#ifdef CONFIG_NVGPU_LS_PMU
-	nvgpu_log_fn(g, " ");
-
-	if (!g->can_elpg) {
-		return 0;
-	}
-
-	if (g->pmu->pg->initialized) {
-		g->ops.gr.init.wait_initialized(g);
-
-		nvgpu_mutex_acquire(&g->cg_pg_lock);
-		if ((g->elpg_enabled) && (g->elpg_ms_enabled)) {
-			err = nvgpu_pmu_enable_elpg_ms(g);
-		}
-		nvgpu_mutex_release(&g->cg_pg_lock);
-	}
-#endif
-	return err;
-}
-
-int nvgpu_pg_elpg_ms_disable(struct gk20a *g)
-{
-	int err = 0;
-#ifdef CONFIG_NVGPU_LS_PMU
-	nvgpu_log_fn(g, " ");
-
-	if (!g->can_elpg) {
-		return 0;
-	}
-
-	if (g->pmu->pg->initialized) {
-		g->ops.gr.init.wait_initialized(g);
-
-		nvgpu_mutex_acquire(&g->cg_pg_lock);
-		if ((g->elpg_enabled) && (g->elpg_ms_enabled)) {
-			err = nvgpu_pmu_disable_elpg_ms(g);
-		}
-		nvgpu_mutex_release(&g->cg_pg_lock);
-	}
-#endif
-	return err;
-}
-

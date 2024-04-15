@@ -1,7 +1,7 @@
 /*
  * nvgpu os fence
  *
- * Copyright (c) 2018-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -25,7 +25,12 @@
 #ifndef NVGPU_OS_FENCE_H
 #define NVGPU_OS_FENCE_H
 
-#include <nvgpu/types.h>
+#include <nvgpu/errno.h>
+
+struct nvgpu_semaphore;
+struct channel_gk20a;
+struct priv_cmd_entry;
+struct nvgpu_nvhost_dev;
 
 /*
  * struct nvgpu_os_fence adds an abstraction to the earlier Android Sync
@@ -41,6 +46,15 @@ struct nvgpu_os_fence;
  */
 struct nvgpu_os_fence_ops {
 	/*
+	 * This API is used to iterate through multiple fence points within the
+	 * fence and program the pushbuffer method for wait command.
+	 */
+	int (*program_waits)(struct nvgpu_os_fence *s,
+		struct priv_cmd_entry *wait_cmd,
+		struct channel_gk20a *c,
+		int max_wait_cmds);
+
+	/*
 	 * This should be the last operation on the OS fence. The
 	 * OS fence acts as a place-holder for the underlying fence
 	 * implementation e.g. sync_fences. For each construct/fdget call
@@ -53,26 +67,12 @@ struct nvgpu_os_fence_ops {
 	 * Used to install the fd in the corresponding OS. The underlying
 	 * implementation varies from OS to OS.
 	 */
-	int (*install_fence)(struct nvgpu_os_fence *s, int fd);
-	/*
-	 * Increment a refcount of the underlying sync object. After this the
-	 * struct nvgpu_os_fence object can be copied once. This call must be
-	 * matched with a drop_ref as usual.
-	 */
-	void (*dup)(struct nvgpu_os_fence *s);
+	void (*install_fence)(struct nvgpu_os_fence *s, int fd);
 };
 
-#if !defined(CONFIG_NVGPU_SYNCFD_NONE)
-
-struct gk20a;
-struct nvgpu_channel;
-
 /*
- * The priv field contains the actual backend:
- * - struct sync_fence for semas on LINUX_VERSION <= 4.14
- * - struct dma_fence for semas on LINUX_VERSION > 4.14
- * - struct nvhost_fence (which is an opaque alias for one of the two above)
- *   for syncpt-backed fences on all kernel versions
+ * The priv structure here is used to contain the struct sync_fence
+ * for LINUX_VERSION <= 4.9 and dma_fence for LINUX_VERSION > 4.9
  */
 struct nvgpu_os_fence {
 	void *priv;
@@ -83,27 +83,56 @@ struct nvgpu_os_fence {
 /*
  * This API is used to validate the nvgpu_os_fence
  */
-static inline bool nvgpu_os_fence_is_initialized(struct nvgpu_os_fence *fence)
+static inline int nvgpu_os_fence_is_initialized(struct nvgpu_os_fence *fence)
 {
 	return (fence->ops != NULL);
 }
 
+#ifdef CONFIG_SYNC
+
+int nvgpu_os_fence_sema_create(
+	struct nvgpu_os_fence *fence_out,
+	struct channel_gk20a *c,
+	struct nvgpu_semaphore *sema);
+
 int nvgpu_os_fence_fdget(
 	struct nvgpu_os_fence *fence_out,
-	struct nvgpu_channel *c, int fd);
+	struct channel_gk20a *c, int fd);
 
-#else /* CONFIG_NVGPU_SYNCFD_NONE */
+#else
 
-struct nvgpu_os_fence {
-	const struct nvgpu_os_fence_ops *ops;
-};
-
-static inline bool nvgpu_os_fence_is_initialized(struct nvgpu_os_fence *fence)
+static inline int nvgpu_os_fence_sema_create(
+	struct nvgpu_os_fence *fence_out,
+	struct channel_gk20a *c,
+	struct nvgpu_semaphore *sema)
 {
-	(void)fence;
-	return false;
+	return -ENOSYS;
+}
+static inline int nvgpu_os_fence_fdget(
+	struct nvgpu_os_fence *fence_out,
+	struct channel_gk20a *c, int fd)
+{
+	return -ENOSYS;
 }
 
-#endif /* CONFIG_NVGPU_SYNCFD_NONE */
+#endif /* CONFIG_SYNC */
+
+#if defined(CONFIG_TEGRA_GK20A_NVHOST) && defined(CONFIG_SYNC)
+
+int nvgpu_os_fence_syncpt_create(struct nvgpu_os_fence *fence_out,
+	struct channel_gk20a *c, struct nvgpu_nvhost_dev *nvhost_dev,
+	u32 id, u32 thresh);
+
+#else
+
+static inline int nvgpu_os_fence_syncpt_create(
+	struct nvgpu_os_fence *fence_out, struct channel_gk20a *c,
+	struct nvgpu_nvhost_dev *nvhost_dev,
+	u32 id, u32 thresh)
+{
+	return -ENOSYS;
+}
+
+#endif /* CONFIG_TEGRA_GK20A_NVHOST && CONFIG_SYNC */
 
 #endif /* NVGPU_OS_FENCE_H */

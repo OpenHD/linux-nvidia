@@ -1,6 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
-/* SPDX-FileCopyrightText: Copyright (c) 2022-2023 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved.
+/*
+ * Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -37,42 +36,15 @@
 #include <linux/tegra_l1ss_kernel_interface.h>
 #include <linux/wait.h>
 
-#include "ArLib.h"
 #include "tegra_l1ss.h"
 #include "tegra_l1ss_cmd_resp_exec_config.h"
 #include "tegra_l1ss_cmd_resp_l2_interface.h"
 
 #define MAX_DEV 1
-#define CMDRESP_ADAPT_MAX_PEER_VM 8U
-/********************************************************************************
- * State of the sender for Command Data to L2SS protected with E2E Profile 5.
- *******************************************************************************/
-static struct E2E_P05ProtectStateType E2EProtectState;
-static struct E2E_P05CheckStateType E2ECheckState;
-
-/*******************************************************************************
- * Configuration of transmitted Command Data to L2SS for E2E Profile 5.
- *******************************************************************************/
-static  struct E2E_P05ConfigType E2ETxConfig = {
-	.Offset = 0U,
-	.DataLength = (8U*CMDRESP_CMD_FRAME_EX_SIZE),
-	.DataID = 0x55,
-	.MaxDeltaCounter = CMDRESPEXEC_L2_IVC_E2E_MAX_DELTA_COUNTER
-};
-
-/*******************************************************************************
- * Configuration of received Data from L2SS, for E2E Profile 5.
- *******************************************************************************/
-static struct E2E_P05ConfigType E2ERxConfig = {
-	.Offset = 0U,
-	.DataLength = (8U*CMDRESP_CMD_FRAME_EX_SIZE),
-	.DataID = NVGUARD_LAYER_2,
-	.MaxDeltaCounter = CMDRESPEXEC_L2_IVC_E2E_MAX_DELTA_COUNTER
-};
 
 struct l1ss_data *ldata;
 struct class *l1ss_class;
-static unsigned int dev_major;
+int dev_major;
 static cmd_resp_look_up_ex cmd_resp_lookup_table[CMDRESPL1_N_CLASSES]
 						[CMDRESPL1_MAX_CMD_IN_CLASS] = {
 						 CMDRESPL1_L2_CLASS0,
@@ -95,47 +67,12 @@ static const struct file_operations l1ss_fops = {
 	.unlocked_ioctl = l1ss_ioctl,
 };
 
-/*******************************************************************************************
- * @brief Function to E2E params
- *
- * - <b>Description</b>\n
- *           Function to E2E params
- *
- * @param void
- *
- * @return NVGUARD_E_OK     On Success
- *
- * @return NVGUARD_E_NOK    On Failure
- *
- ******************************************************************************************/
-static int lCmdRespAdapt_E2EInit(void)
-{
-	if (E2E_P05ProtectInit(&E2EProtectState) != E2E_E_OK) {
-		pr_err("E2E_P05ProtectInit Failed\r\n");
-		return -1;
-	}
-
-	if (E2E_P05CheckInit(&E2ECheckState) != E2E_E_OK) {
-		pr_err("E2E_P05CheckInit Failed\r\n");
-		return -1;
-	}
-
-	pr_info("E2E_P05CheckInit done!");
-
-	return 0;
-}
-
 int l1ss_cmd_resp_send_frame(const cmdresp_frame_ex_t *p_cmd_pkt,
 			     nv_guard_3lss_layer_t layer_id,
 			     struct l1ss_data *ldata)
 {
 	struct tegra_safety_ivc_chan *ivc_ch = NULL;
 	int ret = 0;
-
-	ret = E2E_P05Protect(
-			&(E2ETxConfig),
-			&(E2EProtectState),
-			(uint8_t *)p_cmd_pkt, CMDRESP_CMD_FRAME_EX_SIZE);
 
 	mutex_lock(&ldata->safety_ivc->wlock);
 
@@ -170,8 +107,7 @@ static int l1ss_uevent(struct device *dev, struct kobj_uevent_env *env)
 }
 
 static int l1ss_process_request(nv_guard_request_t *req,
-				struct l1ss_data *ldata)
-{
+				struct l1ss_data *ldata) {
 
 	int ret = 0;
 
@@ -240,11 +176,6 @@ int l1ss_init(struct tegra_safety_ivc *safety_ivc)
 	ldata->cmd_resp_lookup_table = cmd_resp_lookup_table;
 
 	err = alloc_chrdev_region(&ldata->dev, 0, MAX_DEV, "l1ss");
-	if (err) {
-		pr_err("%s: Failed to allocate chardev region\n", __func__);
-		kfree(ldata);
-		return err;
-	}
 
 	ldata->dev_major = MAJOR(ldata->dev);
 
@@ -254,12 +185,7 @@ int l1ss_init(struct tegra_safety_ivc *safety_ivc)
 	cdev_init(&ldata->cdev, &l1ss_fops);
 	ldata->cdev.owner = THIS_MODULE;
 
-	err = cdev_add(&ldata->cdev, MKDEV(ldata->dev_major, 0), 1);
-	if (err) {
-		pr_err("%s: failed to add char device\n", __func__);
-		kfree(ldata);
-		return err;
-	}
+	cdev_add(&ldata->cdev, MKDEV(ldata->dev_major, 0), 1);
 
 	device_create(ldata->l1ss_class, NULL, MKDEV(ldata->dev_major, 0),
 		      NULL, "l1ss-%d", 0);
@@ -267,7 +193,7 @@ int l1ss_init(struct tegra_safety_ivc *safety_ivc)
 	ldata->safety_ivc = safety_ivc;
 	safety_ivc->ldata = ldata;
 
-	return lCmdRespAdapt_E2EInit();
+	return 0;
 }
 
 int l1ss_exit(struct tegra_safety_ivc *safety_ivc)
@@ -303,11 +229,15 @@ static int l1ss_open(struct inode *inode, struct file *file)
 	ldata = container_of(inode->i_cdev, struct l1ss_data, cdev);
 	file->private_data = ldata;
 
+	if (ldata == NULL)
+		return -1;
+
 	return 0;
 }
 
 static int l1ss_release(struct inode *inode, struct file *file)
 {
+
 	PDEBUG("Device close\n");
 	ldata = container_of(inode->i_cdev, struct l1ss_data, cdev);
 	if (ldata) {
@@ -565,7 +495,6 @@ int tegra_safety_handle_cmd(cmdresp_frame_ex_t *cmd_resp,
 	uint8_t cmd;
 	uint8_t dest_class;
 	bool is_resp = false;
-	int ret;
 
 	l_get_src_id(cmdresp_h, &src);
 	l_get_cmd_id(cmdresp_h, &cmd);
@@ -575,15 +504,6 @@ int tegra_safety_handle_cmd(cmdresp_frame_ex_t *cmd_resp,
 
 	PDEBUG("srcID %d destID %d cmdID %d ClassID %d is_resp=%d\n",
 			src, dest, cmd, dest_class, is_resp);
-
-	ret = E2E_P05Check(
-			&(E2ERxConfig),
-			&(E2ECheckState),
-			(uint8_t *)cmd_resp, CMDRESP_CMD_FRAME_EX_SIZE);
-	if (ret != E2E_E_OK) {
-		pr_err("E2E_P05 Check failed!! - 0x%x", ret);
-		return -1;
-	}
 
 	if (dest_class <  CMDRESPL1_N_CLASSES && cmd <
 			CMDRESPL1_MAX_CMD_IN_CLASS) {
@@ -619,7 +539,7 @@ static long l1ss_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case L1SS_CLIENT_REQUEST:
 		PDEBUG("L1SS_CLIENT_REQUEST\n");
 
-		req = kzalloc(sizeof(nv_guard_request_t), GFP_KERNEL);
+		req = kmalloc(sizeof(nv_guard_request_t), GFP_KERNEL);
 		if (req == NULL) {
 			pr_err("Failed to allocate memory");
 			return -1;
@@ -627,7 +547,6 @@ static long l1ss_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		if (copy_from_user(req, (nv_guard_request_t *)arg,
 				   sizeof(nv_guard_request_t))) {
 			pr_err("Failed copy_from_user");
-			kfree(req);
 			return -EACCES;
 		}
 

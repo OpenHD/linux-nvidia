@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2022, NVIDIA CORPORATION, All rights reserved.
+ * Copyright (c) 2016-2018, NVIDIA CORPORATION, All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -318,7 +318,7 @@ error:
 	return ret;
 }
 
-int tegra_safety_dev_init(struct device *dev, uint32_t index)
+int tegra_safety_dev_init(struct device *dev, int index)
 {
 	struct tegra_safety_ivc *safety_ivc = dev_get_drvdata(dev);
 	struct tegra_safety_dev_data *dev_data;
@@ -358,14 +358,14 @@ int tegra_safety_dev_init(struct device *dev, uint32_t index)
 	}
 
 	char_dev = device_create(tegra_safety_dev_class, dev, num,
-			NULL, "safety%u", index);
+			NULL, "safety%d", index);
 	if (IS_ERR(char_dev)) {
 		dev_err(dev, "safety: could not create device\n");
 		ret = PTR_ERR(char_dev);
 		goto error;
 	}
 
-	dev_info(dev, "safety: character device %u registered\n", index);
+	dev_info(dev, "safety: character device %d registered\n", index);
 
 	return ret;
 
@@ -376,7 +376,7 @@ error:
 	return ret;
 }
 
-void tegra_safety_dev_exit(struct device *dev, uint32_t index)
+void tegra_safety_dev_exit(struct device *dev, int index)
 {
 	struct tegra_safety_dev_data *dev_data = safety_dev_data[index];
 	dev_t num = MKDEV(tegra_safety_dev_major_number, index);
@@ -392,6 +392,6 @@ void tegra_safety_dev_exit(struct device *dev, uint32_t index)
 	if (index == (ivc_chan_count-1))
 		tegra_safety_class_exit(dev);
 
-	dev_info(dev, "safety: character device %u unregistered\n", index);
+	dev_info(dev, "safety: character device %d unregistered\n", index);
 }
 

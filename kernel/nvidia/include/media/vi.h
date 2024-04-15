@@ -19,6 +19,7 @@
 #ifndef __NVHOST_VI_H__
 #define __NVHOST_VI_H__
 
+#include <linux/tegra-powergate.h>
 #include <linux/clk/tegra.h>
 
 #include <media/mc_common.h>

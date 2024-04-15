@@ -1,7 +1,7 @@
 /*
  * Tegra Graphics Host Syncpoint Integration to linux/sync Framework
  *
- * Copyright (c) 2013-2020, NVIDIA Corporation.  All rights reserved.
+ * Copyright (c) 2013-2015, NVIDIA Corporation.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -19,11 +19,9 @@
 #ifndef __NVHOST_SYNC_H
 #define __NVHOST_SYNC_H
 
-#include <linux/version.h>
-
-#if IS_ENABLED(CONFIG_SYNC)
-
 #include <linux/types.h>
+
+#ifdef __KERNEL__
 
 struct nvhost_syncpt;
 struct nvhost_ctrl_sync_fence_info;
@@ -55,6 +53,6 @@ static inline void nvhost_sync_pt_signal(struct nvhost_sync_pt *pt,
 
 #endif
 
-#endif
+#endif /* __KERNEL __ */
 
 #endif /* __NVHOST_SYNC_H */

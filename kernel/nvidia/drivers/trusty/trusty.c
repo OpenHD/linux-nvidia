@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2013 Google, Inc.
- * Copyright (c) 2016-2021, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2016-2019, NVIDIA CORPORATION. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -13,6 +13,7 @@
  *
  */
 
+#include <asm/compiler.h>
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -25,9 +26,8 @@
 #include <linux/trusty/sm_err.h>
 #include <linux/trusty/trusty.h>
 #include <soc/tegra/virt/syscalls.h>
+#include <linux/tegra-firmwares.h>
 #include "trusty-workitem.h"
-
-#include "trusty-smc.h"
 
 struct trusty_state;
 
@@ -38,19 +38,37 @@ struct trusty_work {
 
 struct trusty_state {
 	struct mutex smc_lock;
+	struct mutex panic_lock;
 	struct atomic_notifier_head notifier;
+	struct raw_notifier_head panic_notifier;
 	struct completion cpu_idle_completion;
 	char *version_str;
 	u32 api_version;
-	bool trusty_panicked;
 	struct device *dev;
 	struct workqueue_struct *nop_wq;
 	struct trusty_work __percpu *nop_works;
 	struct list_head nop_queue;
-	raw_spinlock_t nop_lock; /* protects nop_queue */
+	spinlock_t nop_lock; /* protects nop_queue */
 };
 
 #define TRUSTY_DEV_COMP "android,trusty-smc-v1"
+
+#ifdef CONFIG_ARM64
+#define SMC_ARG0		"x0"
+#define SMC_ARG1		"x1"
+#define SMC_ARG2		"x2"
+#define SMC_ARG3		"x3"
+#define SMC_ARCH_EXTENSION	""
+#define SMC_REGISTERS_TRASHED	"x4","x5","x6","x7","x8","x9","x10","x11", \
+				"x12","x13","x14","x15","x16","x17"
+#else
+#define SMC_ARG0		"r0"
+#define SMC_ARG1		"r1"
+#define SMC_ARG2		"r2"
+#define SMC_ARG3		"r3"
+#define SMC_ARCH_EXTENSION	".arch_extension sec\n"
+#define SMC_REGISTERS_TRASHED	"ip"
+#endif
 
 #ifdef CONFIG_PREEMPT_RT_FULL
 void migrate_enable(void);
@@ -79,7 +97,26 @@ EXPORT_SYMBOL(hyp_ipa_translate);
 
 static inline ulong smc(ulong r0, ulong r1, ulong r2, ulong r3)
 {
-	return trusty_smc8(r0, r1, r2, r3, 0, 0, 0, 0).r0;
+	register ulong _r0 asm(SMC_ARG0) = r0;
+	register ulong _r1 asm(SMC_ARG1) = r1;
+	register ulong _r2 asm(SMC_ARG2) = r2;
+	register ulong _r3 asm(SMC_ARG3) = r3;
+
+	asm volatile(
+		__asmeq("%0", SMC_ARG0)
+		__asmeq("%1", SMC_ARG1)
+		__asmeq("%2", SMC_ARG2)
+		__asmeq("%3", SMC_ARG3)
+		__asmeq("%4", SMC_ARG0)
+		__asmeq("%5", SMC_ARG1)
+		__asmeq("%6", SMC_ARG2)
+		__asmeq("%7", SMC_ARG3)
+		SMC_ARCH_EXTENSION
+		"smc	#0"	/* switch to secure world */
+		: "=r" (_r0), "=r" (_r1), "=r" (_r2), "=r" (_r3)
+		: "r" (_r0), "r" (_r1), "r" (_r2), "r" (_r3)
+		: SMC_REGISTERS_TRASHED);
+	return _r0;
 }
 
 s32 trusty_fast_call32(struct device *dev, u32 smcnr, u32 a0, u32 a1, u32 a2)
@@ -150,14 +187,14 @@ static ulong trusty_std_call_helper(struct device *dev, ulong smcnr,
 		ret = trusty_std_call_inner(dev, smcnr, a0, a1, a2);
 		atomic_notifier_call_chain(&s->notifier, TRUSTY_CALL_RETURNED,
 					   NULL);
-		if (ret == SM_ERR_INTERRUPTED) {
-			/*
-			 * Make sure this cpu will eventually re-enter trusty
-			 * even if the std_call resumes on another cpu.
-			 */
-			trusty_enqueue_nop(dev, NULL);
-		}
 		local_irq_enable();
+
+		if (ret == SM_ERR_PANIC) {
+			mutex_lock(&s->panic_lock);
+			raw_notifier_call_chain(&s->panic_notifier, 0, NULL);
+			mutex_unlock(&s->panic_lock);
+			break;
+		}
 
 		if ((int)ret != SM_ERR_BUSY)
 			break;
@@ -205,14 +242,6 @@ s32 trusty_std_call32(struct device *dev, u32 smcnr, u32 a0, u32 a1, u32 a2)
 	BUG_ON(SMC_IS_FASTCALL(smcnr));
 	BUG_ON(SMC_IS_SMC64(smcnr));
 
-	if (s->trusty_panicked) {
-		/*
-		 * Avoid calling the notifiers if trusty has panicked as they
-		 * can trigger more calls.
-		 */
-		return SM_ERR_PANIC;
-	}
-
 	if (smcnr != SMC_SC_NOP) {
 		mutex_lock(&s->smc_lock);
 		reinit_completion(&s->cpu_idle_completion);
@@ -232,8 +261,7 @@ s32 trusty_std_call32(struct device *dev, u32 smcnr, u32 a0, u32 a1, u32 a2)
 	dev_dbg(dev, "%s(0x%x 0x%x 0x%x 0x%x) returned 0x%x\n",
 		__func__, smcnr, a0, a1, a2, ret);
 
-	if (WARN_ONCE(ret == SM_ERR_PANIC, "trusty crashed"))
-		s->trusty_panicked = true;
+	WARN_ONCE(ret == SM_ERR_PANIC, "trusty crashed");
 
 	if (smcnr == SMC_SC_NOP)
 		complete(&s->cpu_idle_completion);
@@ -266,6 +294,29 @@ int trusty_call_notifier_unregister(struct device *dev,
 	return atomic_notifier_chain_unregister(&s->notifier, n);
 }
 EXPORT_SYMBOL(trusty_call_notifier_unregister);
+
+int trusty_panic_notifier_register(struct device *dev, struct notifier_block *n)
+{
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	if (!is_trusty_dev_enabled())
+		return -ENODEV;
+
+	return raw_notifier_chain_register(&s->panic_notifier, n);
+}
+EXPORT_SYMBOL(trusty_panic_notifier_register);
+
+int trusty_panic_notifier_unregister(struct device *dev,
+				    struct notifier_block *n)
+{
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	if (!is_trusty_dev_enabled())
+		return -ENODEV;
+
+	return raw_notifier_chain_unregister(&s->panic_notifier, n);
+}
+EXPORT_SYMBOL(trusty_panic_notifier_unregister);
 
 static int trusty_remove_child(struct device *dev, void *data)
 {
@@ -367,7 +418,7 @@ static bool dequeue_nop(struct trusty_state *s, u32 *args)
 	unsigned long flags;
 	struct trusty_nop *nop = NULL;
 
-	raw_spin_lock_irqsave(&s->nop_lock, flags);
+	spin_lock_irqsave(&s->nop_lock, flags);
 	if (!list_empty(&s->nop_queue)) {
 		nop = list_first_entry(&s->nop_queue,
 				       struct trusty_nop, node);
@@ -380,7 +431,7 @@ static bool dequeue_nop(struct trusty_state *s, u32 *args)
 		args[1] = 0;
 		args[2] = 0;
 	}
-	raw_spin_unlock_irqrestore(&s->nop_lock, flags);
+	spin_unlock_irqrestore(&s->nop_lock, flags);
 	return nop;
 }
 
@@ -405,7 +456,6 @@ static void nop_work_func(workitem_t *work)
 	int ret;
 	bool next;
 	u32 args[3];
-	u32 last_arg0;
 	struct trusty_work *tw = container_of(work, struct trusty_work, work);
 	struct trusty_state *s = tw->ts;
 
@@ -416,7 +466,6 @@ static void nop_work_func(workitem_t *work)
 		dev_dbg(s->dev, "%s: %x %x %x\n",
 			__func__, args[0], args[1], args[2]);
 
-		last_arg0 = args[0];
 		ret = trusty_std_call32(s->dev, SMC_SC_NOP,
 					args[0], args[1], args[2]);
 
@@ -437,19 +486,11 @@ static void nop_work_func(workitem_t *work)
 
 		next = dequeue_nop(s, args);
 
-		if (ret == SM_ERR_NOP_INTERRUPTED) {
+		if (ret == SM_ERR_NOP_INTERRUPTED)
 			next = true;
-		} else if (ret != SM_ERR_NOP_DONE) {
-			dev_err(s->dev, "%s: SMC_SC_NOP %x failed %d",
-				__func__, last_arg0, ret);
-			if (last_arg0) {
-				/*
-				 * Don't break out of the loop if a non-default
-				 * nop-handler returns an error.
-				 */
-				next = true;
-			}
-		}
+		else if (ret != SM_ERR_NOP_DONE)
+			dev_err(s->dev, "%s: SMC_SC_NOP failed %d",
+				__func__, ret);
 	} while (next);
 
 	dev_dbg(s->dev, "%s: done\n", __func__);
@@ -471,10 +512,10 @@ void trusty_enqueue_nop(struct device *dev, struct trusty_nop *nop)
 	if (nop) {
 		WARN_ON(s->api_version < TRUSTY_API_VERSION_SMP_NOP);
 
-		raw_spin_lock_irqsave(&s->nop_lock, flags);
+		spin_lock_irqsave(&s->nop_lock, flags);
 		if (list_empty(&nop->node))
 			list_add_tail(&nop->node, &s->nop_queue);
-		raw_spin_unlock_irqrestore(&s->nop_lock, flags);
+		spin_unlock_irqrestore(&s->nop_lock, flags);
 	}
 	schedule_workitem(s->nop_wq, &tw->work);
 
@@ -494,10 +535,10 @@ void trusty_dequeue_nop(struct device *dev, struct trusty_nop *nop)
 	if (WARN_ON(!nop))
 		return;
 
-	raw_spin_lock_irqsave(&s->nop_lock, flags);
+	spin_lock_irqsave(&s->nop_lock, flags);
 	if (!list_empty(&nop->node))
 		list_del_init(&nop->node);
-	raw_spin_unlock_irqrestore(&s->nop_lock, flags);
+	spin_unlock_irqrestore(&s->nop_lock, flags);
 }
 EXPORT_SYMBOL(trusty_dequeue_nop);
 
@@ -552,10 +593,12 @@ static int trusty_probe(struct platform_device *pdev)
 	}
 
 	s->dev = &pdev->dev;
-	raw_spin_lock_init(&s->nop_lock);
+	spin_lock_init(&s->nop_lock);
 	INIT_LIST_HEAD(&s->nop_queue);
 	mutex_init(&s->smc_lock);
+	mutex_init(&s->panic_lock);
 	ATOMIC_INIT_NOTIFIER_HEAD(&s->notifier);
+	RAW_INIT_NOTIFIER_HEAD(&s->panic_notifier);
 	init_completion(&s->cpu_idle_completion);
 	platform_set_drvdata(pdev, s);
 
@@ -597,6 +640,7 @@ static int trusty_probe(struct platform_device *pdev)
 		goto err_add_children;
 	}
 
+	devm_tegrafw_register_string(&pdev->dev, "trusty", s->version_str);
 	return 0;
 
 err_add_children:
@@ -616,6 +660,7 @@ err_api_version:
 	}
 	device_for_each_child(&pdev->dev, NULL, trusty_remove_child);
 	mutex_destroy(&s->smc_lock);
+	mutex_destroy(&s->panic_lock);
 	kfree(s);
 err_allocate_state:
 	return ret;
@@ -639,6 +684,7 @@ static int trusty_remove(struct platform_device *pdev)
 	destroy_workqueue(s->nop_wq);
 
 	mutex_destroy(&s->smc_lock);
+	mutex_destroy(&s->panic_lock);
 	if (s->version_str) {
 		device_remove_file(&pdev->dev, &dev_attr_trusty_version);
 		kfree(s->version_str);

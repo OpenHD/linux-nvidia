@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2019, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2020, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -127,14 +127,13 @@ void bpmp_handle_irq(unsigned int chidx)
 	if (!mail_ops)
 		return;
 
-	/* If supported incoming channel */
-	if (channel_cfg->ib_ch_cnt != 0U) {
-		if (WARN_ON_ONCE(chidx >= channel_cfg->ib_ch_cnt))
-			return;
-		ch = channel_cfg->ib_ch_0 + chidx;
-		if (mail_ops->slave_signalled(mail_ops, ch))
-			bpmp_handle_mail(channel_area[ch].ib->code, ch);
-	}
+	if (WARN_ON_ONCE(chidx >= channel_cfg->ib_ch_cnt))
+		return;
+
+	ch = channel_cfg->ib_ch_0 + chidx;
+
+	if (mail_ops->slave_signalled(mail_ops, ch))
+		bpmp_handle_mail(channel_area[ch].ib->code, ch);
 
 	spin_lock(&lock);
 
@@ -464,7 +463,7 @@ int tegra_bpmp_suspend(void)
 		unsigned int i;
 		pr_err("%s() channels waiting (to_complete 0x%x)\n",
 				__func__, to_complete);
-		for (i = 0; i < 32; ++i) {
+		for (i = 0; i < NR_MAX_CHANNELS; ++i) {
 			if (to_complete & (1 << i)) {
 				bpmp_dump_req(i);
 			}

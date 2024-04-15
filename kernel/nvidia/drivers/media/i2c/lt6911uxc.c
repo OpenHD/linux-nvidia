@@ -1,7 +1,7 @@
 /*
  * Lontium LT6911UXC HDMI-CSI bridge driver
  *
- * Copyright (c) 2020-2023, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2020-2021, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -90,7 +90,7 @@ static int lt6911uxc_start_streaming(struct tegracam_device *tc_dev)
 	struct camera_common_data *s_data = tc_dev->s_data;
 	struct camera_common_power_rail *pw = s_data->power;
 
-	if (gpio_is_valid(pw->reset_gpio)) {
+	if (pw->reset_gpio) {
 		if (gpio_cansleep(pw->reset_gpio))
 			gpio_set_value_cansleep(pw->reset_gpio, 1);
 		else
@@ -104,7 +104,7 @@ static int lt6911uxc_stop_streaming(struct tegracam_device *tc_dev)
 	struct camera_common_data *s_data = tc_dev->s_data;
 	struct camera_common_power_rail *pw = s_data->power;
 
-	if (gpio_is_valid(pw->reset_gpio)) {
+	if (pw->reset_gpio) {
 		if (gpio_cansleep(pw->reset_gpio))
 			gpio_set_value_cansleep(pw->reset_gpio, 0);
 		else
@@ -189,7 +189,7 @@ static int lt6911uxc_power_get(struct tegracam_device *tc_dev)
 	/* vdd 1.8v */
 	if (pdata->regulators.iovdd)
 		err |= camera_common_regulator_get(dev,
-				&pw->avdd, pdata->regulators.iovdd);
+				&pw->avdd, pdata->regulators.avdd);
 	if (err) {
 		dev_err(dev, "%s: unable to get regulator(s)\n", __func__);
 		goto done;
@@ -311,7 +311,7 @@ static int lt6911uxc_power_on(struct camera_common_data *s_data)
 		return err;
 	}
 
-	if (gpio_is_valid(pw->reset_gpio)) {
+	if (pw->reset_gpio) {
 		if (gpio_cansleep(pw->reset_gpio))
 			gpio_set_value_cansleep(pw->reset_gpio, 0);
 		else
@@ -371,7 +371,7 @@ static int lt6911uxc_power_off(struct camera_common_data *s_data)
 			return err;
 		}
 	} else {
-		if (gpio_is_valid(pw->reset_gpio)) {
+		if (pw->reset_gpio) {
 			if (gpio_cansleep(pw->reset_gpio))
 				gpio_set_value_cansleep(pw->reset_gpio, 0);
 			else
@@ -454,7 +454,7 @@ static int lt6911uxc_probe(struct i2c_client *client,
 	struct lt6911uxc *priv;
 	int err;
 
-	dev_info(dev, "probing lt6911uxc v4l2 sensor at addr 0x%0x\n",
+	dev_err(dev, "probing lt6911uxc v4l2 sensor at addr 0x%0x\n",
 				client->addr);
 
 	if (!IS_ENABLED(CONFIG_OF) || !client->dev.of_node)
@@ -490,7 +490,6 @@ static int lt6911uxc_probe(struct i2c_client *client,
 
 	err = lt6911uxc_board_setup(priv);
 	if (err) {
-		tegracam_device_unregister(tc_dev);
 		dev_err(dev, "board setup failed\n");
 		return err;
 	}

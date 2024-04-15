@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2019, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -48,20 +48,12 @@ struct unit_test_list {
 	struct unit_test_record *last;
 };
 
-enum result_enum {
-	PASSED,
-	FAILED,
-	SKIPPED,
-};
-
 struct unit_results {
 	struct unit_test_list passing;
 	struct unit_test_list failing;
-	struct unit_test_list skipped;
 
 	int nr_tests;
 	int nr_passing;
-	int nr_skipped;
 };
 
 #define for_record_in_test_list(__test_list, __test)	\
@@ -72,7 +64,7 @@ struct unit_results {
 int core_add_test_record(struct unit_fw *fw,
 			 struct unit_module *mod,
 			 struct unit_module_test *test,
-			 enum result_enum result);
+			 bool success);
 void core_print_test_status(struct unit_fw *fw);
 
 #endif

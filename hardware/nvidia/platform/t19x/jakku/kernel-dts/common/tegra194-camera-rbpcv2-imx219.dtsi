@@ -17,31 +17,31 @@
 #include <dt-bindings/media/camera.h>
 
 / {
-	tegra-capture-vi  {
-		num-channels = <2>;
-		ports {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			vi_port0: port@0 {
-				reg = <0>;
-				rbpcv2_imx219_vi_in0: endpoint {
-					port-index = <0>;
-					bus-width = <2>;
-					remote-endpoint = <&rbpcv2_imx219_csi_out0>;
+	host1x {
+		vi@15c10000  {
+			num-channels = <2>;
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				vi_port0: port@0 {
+					reg = <0>;
+					rbpcv2_imx219_vi_in0: endpoint {
+						port-index = <0>;
+						bus-width = <2>;
+						remote-endpoint = <&rbpcv2_imx219_csi_out0>;
+					};
 				};
-			};
-			vi_port1: port@1 {
-				reg = <1>;
-				rbpcv2_imx219_vi_in1: endpoint {
-					port-index = <2>;
-					bus-width = <2>;
-					remote-endpoint = <&rbpcv2_imx219_csi_out1>;
+				vi_port1: port@1 {
+					reg = <1>;
+					rbpcv2_imx219_vi_in1: endpoint {
+						port-index = <2>;
+						bus-width = <2>;
+						remote-endpoint = <&rbpcv2_imx219_csi_out1>;
+					};
 				};
 			};
 		};
-	};
 
-	host1x@13e00000 {
 		nvcsi@15a00000 {
 			num-channels = <2>;
 			#address-cells = <1>;
@@ -94,7 +94,7 @@
 	cam_i2cmux {
 		i2c_0:i2c@0 {
 			imx219_cam0: rbpcv2_imx219_a@10 {
-				compatible = "sony,imx219";
+				compatible = "nvidia,imx219";
 				/* I2C device address */
 				reg = <0x10>;
 
@@ -190,7 +190,7 @@
 				* Sensor embedded metadata height in units of rows.
 				* If sensor does not support embedded metadata value should be 0.
 				*/
-				mode0 { /* IMX219_MODE_3280x2464_21FPS */
+				mode0 { /* IMX219_MODE_3264x2464_21FPS */
 					mclk_khz = "24000";
 					num_lanes = "2";
 					tegra_sinterface = "serial_a";
@@ -199,11 +199,9 @@
 					dpcm_enable = "false";
 					cil_settletime = "0";
 
-					active_w = "3280";
+					active_w = "3264";
 					active_h = "2464";
-					mode_type = "bayer";
-					pixel_phase = "rggb";
-					csi_pixel_bit_depth = "10";
+					pixel_t = "bayer_rggb";
 					readout_orientation = "90";
 					line_length = "3448";
 					inherent_gain = "1";
@@ -230,7 +228,7 @@
 
 					embedded_metadata_height = "2";
 				};
-				mode1 { /* IMX219_MODE_3280x1848_28FPS */
+				mode1 { /* IMX219_MODE_3264x1848_28FPS */
 					mclk_khz = "24000";
 					num_lanes = "2";
 					tegra_sinterface = "serial_a";
@@ -239,11 +237,9 @@
 					dpcm_enable = "false";
 					cil_settletime = "0";
 
-					active_w = "3280";
+					active_w = "3264";
 					active_h = "1848";
-					mode_type = "bayer";
-					pixel_phase = "rggb";
-					csi_pixel_bit_depth = "10";
+					pixel_t = "bayer_rggb";
 					readout_orientation = "90";
 					line_length = "3448";
 					inherent_gain = "1";
@@ -281,9 +277,7 @@
 
 					active_w = "1920";
 					active_h = "1080";
-					mode_type = "bayer";
-					pixel_phase = "rggb";
-					csi_pixel_bit_depth = "10";
+					pixel_t = "bayer_rggb";
 					readout_orientation = "90";
 					line_length = "3448";
 					inherent_gain = "1";
@@ -322,9 +316,7 @@
 
 					active_w = "1640";
 					active_h = "1232";
-					mode_type = "bayer";
-					pixel_phase = "rggb";
-					csi_pixel_bit_depth = "10";
+					pixel_t = "bayer_rggb";
 					readout_orientation = "90";
 					line_length = "3448";
 					inherent_gain = "1";
@@ -363,9 +355,7 @@
 
 					active_w = "1280";
 					active_h = "720";
-					mode_type = "bayer";
-					pixel_phase = "rggb";
-					csi_pixel_bit_depth = "10";
+					pixel_t = "bayer_rggb";
 					readout_orientation = "90";
 					line_length = "3448";
 					inherent_gain = "1";
@@ -404,9 +394,7 @@
 
 					* active_w = "1280";
 					* active_h = "720";
-					* mode_type = "bayer";
-					* pixel_phase = "rggb";
-					* csi_pixel_bit_depth = "10";
+					* pixel_t = "bayer_rggb";
 					* readout_orientation = "90";
 					* line_length = "3560";
 					* inherent_gain = "1";
@@ -451,7 +439,7 @@
 		};
 		i2c_1: i2c@1 {
 			imx219_cam1: rbpcv2_imx219_c@10 {
-				compatible = "sony,imx219";
+				compatible = "nvidia,imx219";
 				/* I2C device address */
 				reg = <0x10>;
 
@@ -547,7 +535,7 @@
 				* Sensor embedded metadata height in units of rows.
 				* If sensor does not support embedded metadata value should be 0.
 				*/
-				mode0 { /* IMX219_MODE_3280x2464_21FPS */
+				mode0 { /* IMX219_MODE_3264x2464_21FPS */
 					mclk_khz = "24000";
 					num_lanes = "2";
 					tegra_sinterface = "serial_c";
@@ -556,11 +544,9 @@
 					dpcm_enable = "false";
 					cil_settletime = "0";
 
-					active_w = "3280";
+					active_w = "3264";
 					active_h = "2464";
-					mode_type = "bayer";
-					pixel_phase = "rggb";
-					csi_pixel_bit_depth = "10";
+					pixel_t = "bayer_rggb";
 					readout_orientation = "90";
 					line_length = "3448";
 					inherent_gain = "1";
@@ -587,7 +573,7 @@
 
 					embedded_metadata_height = "2";
 				};
-				mode1 { /* IMX219_MODE_3280x1848_28FPS */
+				mode1 { /* IMX219_MODE_3264x1848_28FPS */
 					mclk_khz = "24000";
 					num_lanes = "2";
 					tegra_sinterface = "serial_c";
@@ -596,11 +582,9 @@
 					dpcm_enable = "false";
 					cil_settletime = "0";
 
-					active_w = "3280";
+					active_w = "3264";
 					active_h = "1848";
-					mode_type = "bayer";
-					pixel_phase = "rggb";
-					csi_pixel_bit_depth = "10";
+					pixel_t = "bayer_rggb";
 					readout_orientation = "90";
 					line_length = "3448";
 					inherent_gain = "1";
@@ -638,9 +622,7 @@
 
 					active_w = "1920";
 					active_h = "1080";
-					mode_type = "bayer";
-					pixel_phase = "rggb";
-					csi_pixel_bit_depth = "10";
+					pixel_t = "bayer_rggb";
 					readout_orientation = "90";
 					line_length = "3448";
 					inherent_gain = "1";
@@ -678,9 +660,7 @@
 
 					active_w = "1640";
 					active_h = "1232";
-					mode_type = "bayer";
-					pixel_phase = "rggb";
-					csi_pixel_bit_depth = "10";
+					pixel_t = "bayer_rggb";
 					readout_orientation = "90";
 					line_length = "3448";
 					inherent_gain = "1";
@@ -718,9 +698,7 @@
 
 					active_w = "1280";
 					active_h = "720";
-					mode_type = "bayer";
-					pixel_phase = "rggb";
-					csi_pixel_bit_depth = "10";
+					pixel_t = "bayer_rggb";
 					readout_orientation = "90";
 					line_length = "3448";
 					inherent_gain = "1";
@@ -759,9 +737,7 @@
 
 				*	active_w = "1280";
 				*	active_h = "720";
-				*	mode_type = "bayer";
-				*	pixel_phase = "rggb";
-				*	csi_pixel_bit_depth = "10";
+				*	pixel_t = "bayer_rggb";
 				*	readout_orientation = "90";
 				*	line_length = "3560";
 				*	inherent_gain = "1";

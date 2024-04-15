@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2023, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2015-16, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -21,6 +21,9 @@
 #define SCEW_STREAMID_OVERRIDE			BIT(8)
 #define SCEW_NS					BIT(0)
 
+#define MC_SMMU_BYPASS_CONFIG_0			0x1820
+#define TBU_BYPASS_SID				2
+
 #define DEFREG(__name, __offset)		\
 	[__name] = {				\
 		.name = __stringify(__name),	\
@@ -41,10 +44,9 @@ struct sid_override_reg {
 	int offs;
 };
 
-#define MAX_OIDS_IN_SID 13
+#define MAX_OIDS_IN_SID 8
 
 struct sid_to_oids {
-	unsigned int client_id;		/* Client ID */
 	int sid;			/* StreamID */
 	int noids;			/* # of override IDs */
 	int oid[MAX_OIDS_IN_SID];	/* Override IDs */
@@ -63,8 +65,8 @@ struct tegra_mc_sid_soc_data {
 int tegra_mc_sid_probe(struct platform_device *pdev,
 			const struct tegra_mc_sid_soc_data *soc_data);
 int tegra_mc_sid_remove(struct platform_device *pdev);
-int tegra_mc_sid_resume_early(struct device *dev);
 
+u32 tegra_mc_get_smmu_bypass_sid(void);
 const char *tegra_mc_get_sid_name(int sid);
 
 #endif

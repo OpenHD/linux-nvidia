@@ -16,7 +16,6 @@
  *
  */
 
-#include <linux/version.h>
 #include "dhd_custom_sysfs_tegra.h"
 #include "dhd_custom_sysfs_tegra_stat.h"
 #include "dhd_custom_net_diag_tegra.h"
@@ -129,11 +128,7 @@ stat_work_func(struct work_struct *work)
 	char *netif = net ? net->name : "";
 	wl_cnt_t *cnt;
 	int i;
-#if KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE
 	struct timespec now;
-#else
-	struct timespec64 now;
-#endif
 #ifdef CONFIG_BCMDHD_CUSTOM_NET_BW_EST_TEGRA
 	tegra_net_diag_data_t net_diag_data;
 	int bwValue;
@@ -253,11 +248,7 @@ tegra_sysfs_histogram_stat_show(struct device *dev,
 		return 0;
 	}
 #else
-#if KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE
 	struct timespec now;
-#else
-	struct timespec64 now;
-#endif
 	int i, n, comma;
 #ifdef CONFIG_BCMDHD_CUSTOM_NET_BW_EST_TEGRA
 	tegra_net_diag_data_t net_diag_data;
@@ -274,7 +265,7 @@ tegra_sysfs_histogram_stat_show(struct device *dev,
 	snprintf(buf + n, PAGE_SIZE - n,
 		"{\n"
 #ifdef CONFIG_BCMDHD_CUSTOM_NET_BW_EST_TEGRA
-		"\"version\": 3.3,\n"
+		"\"version\": 3.2,\n"
 #else
 		"\"version\": 3,\n"
 #endif /* CONFIG_BCMDHD_CUSTOM_NET_BW_EST_TEGRA */
@@ -295,8 +286,7 @@ tegra_sysfs_histogram_stat_show(struct device *dev,
 		"\"hang\": %lu,\n"
 		"\"ago_start\": %lu,\n"
 		"\"connect_on_2g_channel\": %lu,\n"
-		"\"connect_on_5g_channel\": %lu,\n"
-		"\"skb_realloc_headroom_fail\": %lu,\n",
+		"\"connect_on_5g_channel\": %lu,\n",
 		MSEC(dhdstats_ts),
 		MSEC(now),
 		PRINT_DIFF(gen_stat.wifi_on_success),
@@ -314,8 +304,7 @@ tegra_sysfs_histogram_stat_show(struct device *dev,
 		PRINT_DIFF(gen_stat.hang),
 		PRINT_DIFF(gen_stat.ago_start),
 		PRINT_DIFF(gen_stat.connect_on_2g_channel),
-		PRINT_DIFF(gen_stat.connect_on_5g_channel),
-		PRINT_DIFF(gen_stat.skb_realloc_headroom_fail));
+		PRINT_DIFF(gen_stat.connect_on_5g_channel));
 
 	/* print statistics */
 	n = strlen(buf);

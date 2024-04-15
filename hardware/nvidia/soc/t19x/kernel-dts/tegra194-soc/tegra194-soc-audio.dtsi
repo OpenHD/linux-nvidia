@@ -1,17 +1,19 @@
 /*
- * Copyright (c) 2017-2021, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2017-2018, NVIDIA CORPORATION.  All rights reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
- * This program is distributed in the hope it will be useful, but WITHOUT
+ * This program is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  */
 
 #include "dt-bindings/interrupt-controller/tegra-t19x-agic.h"
@@ -19,20 +21,17 @@
 / {
 	sound {
 		iommus = <&smmu TEGRA_SID_APE>;
+		dma-mask = <0x0 0x5e000000>;
 		iommu-resv-regions = <0x0 0x0 0x0 0x40000000 0x0 0x60000000 0xffffffff 0xffffffff>;
-		status = "disabled";
-	};
-
-	/* generic audio-graph based sound card */
-	sound_graph {
-		iommus = <&smmu TEGRA_SID_APE>;
-		iommu-resv-regions = <0x0 0x0 0x0 0x40000000 0x0 0x60000000 0xffffffff 0xffffffff>;
+		iommu-group-id = <TEGRA_IOMMU_GROUP_APE>;
 		status = "disabled";
 	};
 
 	sound_ref {
 		iommus = <&smmu TEGRA_SID_APE>;
+		dma-mask = <0x0 0x5e000000>;
 		iommu-resv-regions = <0x0 0x0 0x0 0x40000000 0x0 0x60000000 0xffffffff 0xffffffff>;
+		iommu-group-id = <TEGRA_IOMMU_GROUP_APE>;
 		status = "disabled";
 	};
 
@@ -48,8 +47,7 @@
 		status = "disabled";
 
 		tegra_agic: agic-controller@2a41000 {
-			compatible = "nvidia,tegra186-agic",
-				     "nvidia,tegra210-agic";
+			compatible = "nvidia,tegra186-agic";
 			#interrupt-cells = <4>;
 			interrupt-controller;
 			reg = <0x0 0x02a41000 0x0 0x1000>,
@@ -136,13 +134,14 @@
 			resets = <&bpmp_resets TEGRA194_RESET_ADSP_ALL>;
 			reset-names = "adspall";
 			iommus = <&smmu TEGRA_SID_APE>;
+			dma-mask = <0x0 0x5e000000>;
 			iommu-resv-regions = <0x0 0x0 0x0 0x40000000 0x0 0x60000000 0xffffffff 0xffffffff>;
+			iommu-group-id = <TEGRA_IOMMU_GROUP_APE>;
 			status = "disabled";
 		};
 
 		adma: adma@2930000 {
-			compatible = "nvidia,tegra194-adma",
-				     "nvidia,tegra186-adma";
+			compatible = "nvidia,tegra194-adma";
 			interrupt-parent = <&tegra_agic>;
 			reg = <0x0 0x02930000 0x0 0x50000>,	/* ADMA Reg */
 			      <0x0 0x029f0000 0x0 0x10>;	/* HSP SS */
@@ -185,8 +184,7 @@
 		};
 
 		tegra_axbar: ahub {
-			compatible = "nvidia,tegra186-ahub",
-				     "nvidia,tegra186-axbar";
+			compatible = "nvidia,tegra186-axbar";
 			wakeup-disable;
 			reg = <0x0 0x02900800 0x0 0x800>;
 			clocks = <&bpmp_clks TEGRA194_CLK_AHUB>,
@@ -194,21 +192,14 @@
 				 <&bpmp_clks TEGRA194_CLK_APB2APE>,
 				 <&bpmp_clks TEGRA194_CLK_APE>;
 			clock-names = "ahub", "parent", "apb2ape", "xbar.ape";
-			assigned-clocks = <&bpmp_clks TEGRA194_CLK_PLLA>,
-					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>,
-					<&bpmp_clks TEGRA194_CLK_AHUB>;
+			assigned-clocks = <&bpmp_clks TEGRA194_CLK_AHUB>;
 			assigned-clock-parents =
-				<0>,
-				<&bpmp_clks TEGRA194_CLK_PLLA>,
 				<&bpmp_clks TEGRA194_CLK_PLLP_OUT0>;
-			assigned-clock-rates = <294912000>,
-						<49152000>,
-						<81600000>;
+			assigned-clock-rates = <81600000>;
 			status = "disabled";
 
 			#address-cells = <2>;
 			#size-cells = <2>;
-			#sound-dai-cells = <1>;
 			ranges;
 
 			tegra_admaif: admaif@290f000 {
@@ -233,7 +224,6 @@
 					"rx13", "tx13",	"rx14", "tx14", "rx15", "tx15",
 					"rx16", "tx16",	"rx17", "tx17", "rx18", "tx18",
 					"rx19", "tx19",	"rx20", "tx20";
-				#sound-dai-cells = <1>;
 				status = "disabled";
 			};
 
@@ -241,8 +231,6 @@
 				compatible = "nvidia,tegra210-sfc";
 				reg = <0x0 0x2902000 0x0 0x200>;
 				nvidia,ahub-sfc-id = <0>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "SFC1";
 				status = "disabled";
 			};
 
@@ -250,8 +238,6 @@
 				compatible = "nvidia,tegra210-sfc";
 				reg = <0x0 0x2902200 0x0 0x200>;
 				nvidia,ahub-sfc-id = <1>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "SFC2";
 				status = "disabled";
 			};
 
@@ -259,8 +245,6 @@
 				compatible = "nvidia,tegra210-sfc";
 				reg = <0x0 0x2902400 0x0 0x200>;
 				nvidia,ahub-sfc-id = <2>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "SFC3";
 				status = "disabled";
 			};
 
@@ -268,8 +252,6 @@
 				compatible = "nvidia,tegra210-sfc";
 				reg = <0x0 0x2902600 0x0 0x200>;
 				nvidia,ahub-sfc-id = <3>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "SFC4";
 				status = "disabled";
 			};
 
@@ -284,8 +266,6 @@
 				compatible = "nvidia,tegra210-amixer";
 				reg = <0x0 0x290bb00 0x0 0x800>;
 				nvidia,ahub-amixer-id = <0>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "MIXER1";
 				status = "disabled";
 			};
 
@@ -306,8 +286,6 @@
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <1536000>;
 				fsync-width = <31>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "I2S1";
 				status = "disabled";
 			};
 
@@ -328,8 +306,6 @@
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <1536000>;
 				fsync-width = <31>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "I2S2";
 				status = "disabled";
 			};
 
@@ -350,8 +326,6 @@
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <1536000>;
 				fsync-width = <31>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "I2S3";
 				status = "disabled";
 			};
 
@@ -372,8 +346,6 @@
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <1536000>;
 				fsync-width = <31>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "I2S4";
 				status = "disabled";
 			};
 
@@ -394,8 +366,6 @@
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <1536000>;
 				fsync-width = <31>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "I2S5";
 				status = "disabled";
 			};
 
@@ -416,8 +386,6 @@
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <1536000>;
 				fsync-width = <31>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "I2S6";
 				status = "disabled";
 			};
 
@@ -425,8 +393,6 @@
 				compatible = "nvidia,tegra194-amx";
 				reg = <0x0 0x2903000 0x0 0x100>;
 				nvidia,ahub-amx-id = <0>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "AMX1";
 				status = "disabled";
 			};
 
@@ -434,8 +400,6 @@
 				compatible = "nvidia,tegra194-amx";
 				reg = <0x0 0x2903100 0x0 0x100>;
 				nvidia,ahub-amx-id = <1>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "AMX2";
 				status = "disabled";
 			};
 
@@ -443,8 +407,6 @@
 				compatible = "nvidia,tegra194-amx";
 				reg = <0x0 0x2903200 0x0 0x100>;
 				nvidia,ahub-amx-id = <2>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "AMX3";
 				status = "disabled";
 			};
 
@@ -452,8 +414,6 @@
 				compatible = "nvidia,tegra194-amx";
 				reg = <0x0 0x2903300 0x0 0x100>;
 				nvidia,ahub-amx-id = <3>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "AMX4";
 				status = "disabled";
 			};
 
@@ -461,8 +421,6 @@
 				compatible = "nvidia,tegra210-adx";
 				reg = <0x0 0x2903800 0x0 0x100>;
 				nvidia,ahub-adx-id = <0>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "ADX1";
 				status = "disabled";
 			};
 
@@ -470,8 +428,6 @@
 				compatible = "nvidia,tegra210-adx";
 				reg = <0x0 0x2903900 0x0 0x100>;
 				nvidia,ahub-adx-id = <1>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "ADX2";
 				status = "disabled";
 			};
 
@@ -479,8 +435,6 @@
 				compatible = "nvidia,tegra210-adx";
 				reg = <0x0 0x2903a00 0x0 0x100>;
 				nvidia,ahub-adx-id = <2>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "ADX3";
 				status = "disabled";
 			};
 
@@ -488,8 +442,6 @@
 				compatible = "nvidia,tegra210-adx";
 				reg = <0x0 0x2903b00 0x0 0x100>;
 				nvidia,ahub-adx-id = <3>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "ADX4";
 				status = "disabled";
 			};
 
@@ -505,8 +457,6 @@
 				assigned-clock-parents =
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <3072000>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "DMIC1";
 				status = "disabled";
 			};
 
@@ -522,8 +472,6 @@
 				assigned-clock-parents =
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <3072000>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "DMIC2";
 				status = "disabled";
 			};
 
@@ -540,8 +488,6 @@
 				assigned-clock-parents =
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <3072000>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "DMIC3";
 				status = "disabled";
 			};
 
@@ -557,8 +503,6 @@
 				assigned-clock-parents =
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <3072000>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "DMIC4";
 				status = "disabled";
 			};
 
@@ -566,8 +510,6 @@
 				compatible = "nvidia,tegra186-afc";
 				reg = <0x0 0x2907000 0x0 0x100>;
 				nvidia,ahub-afc-id = <0>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "AFC1";
 				status = "disabled";
 			};
 
@@ -575,8 +517,6 @@
 				compatible = "nvidia,tegra186-afc";
 				reg = <0x0 0x2907100 0x0 0x100>;
 				nvidia,ahub-afc-id = <1>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "AFC2";
 				status = "disabled";
 			};
 
@@ -584,8 +524,6 @@
 				compatible = "nvidia,tegra186-afc";
 				reg = <0x0 0x2907200 0x0 0x100>;
 				nvidia,ahub-afc-id = <2>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "AFC3";
 				status = "disabled";
 			};
 
@@ -593,8 +531,6 @@
 				compatible = "nvidia,tegra186-afc";
 				reg = <0x0 0x2907300 0x0 0x100>;
 				nvidia,ahub-afc-id = <3>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "AFC4";
 				status = "disabled";
 			};
 
@@ -602,8 +538,6 @@
 				compatible = "nvidia,tegra186-afc";
 				reg = <0x0 0x2907400 0x0 0x100>;
 				nvidia,ahub-afc-id = <4>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "AFC5";
 				status = "disabled";
 			};
 
@@ -611,8 +545,6 @@
 				compatible = "nvidia,tegra186-afc";
 				reg = <0x0 0x2907500 0x0 0x100>;
 				nvidia,ahub-afc-id = <5>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "AFC6";
 				status = "disabled";
 			};
 
@@ -620,8 +552,6 @@
 				compatible = "nvidia,tegra210-mvc";
 				reg = <0x0 0x290a000 0x0 0x200>;
 				nvidia,ahub-mvc-id = <0>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "MVC1";
 				status = "disabled";
 			};
 
@@ -629,8 +559,6 @@
 				compatible = "nvidia,tegra210-mvc";
 				reg = <0x0 0x290a200 0x0 0x200>;
 				nvidia,ahub-mvc-id = <1>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "MVC2";
 				status = "disabled";
 			};
 
@@ -644,11 +572,9 @@
 			};
 
 			tegra_asrc: asrc@2910000 {
-				compatible = "nvidia,tegra194-asrc";
+				compatible = "nvidia,tegra186-asrc";
 				reg = <0x0 0x2910000 0x0 0x2000>;
 				nvidia,ahub-asrc-id = <0>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "ASRC";
 				status = "disabled";
 			};
 
@@ -656,7 +582,6 @@
 				compatible = "nvidia,tegra186-arad";
 				reg = <0x0 0x290e400 0x0 0x400>;
 				nvidia,ahub-arad-id = <0>;
-				#sound-dai-cells = <1>;
 				status = "disabled";
 			};
 
@@ -674,8 +599,6 @@
 				      <0x0 0x2908100 0x0 0x100>,
 				      <0x0 0x2908200 0x0 0x200>;
 				nvidia,ahub-ope-id = <0>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "OPE1";
 				status = "disabled";
 			};
 
@@ -692,8 +615,6 @@
 				assigned-clock-parents =
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <12288000>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "DSPK1";
 				status = "disabled";
 			};
 
@@ -711,8 +632,6 @@
 				assigned-clock-parents =
 					<&bpmp_clks TEGRA194_CLK_PLLA_OUT0>;
 				assigned-clock-rates = <12288000>;
-				#sound-dai-cells = <1>;
-				sound-name-prefix = "DSPK2";
 				status = "disabled";
 			};
 		};
@@ -728,6 +647,7 @@
 			nvidia,adma_ch_cnt = <16>;
 			iommus = <&smmu TEGRA_SID_APE>;
 			iommu-resv-regions = <0x0 0x0 0x0 0x40000000 0x0 0x60000000 0xffffffff 0xffffffff>;
+			iommu-group-id = <TEGRA_IOMMU_GROUP_APE>;
 			interrupt-parent = <&tegra_agic>;
 			interrupts = <GIC_SPI INT_ADMA_EOT16 IRQ_TYPE_LEVEL_HIGH
 					ROUTE_TO_ADSP>,
@@ -761,21 +681,13 @@
 					ROUTE_TO_ADSP>,
 				     <GIC_SPI INT_ADMA_EOT31 IRQ_TYPE_LEVEL_HIGH
 					ROUTE_TO_ADSP>;
-			#sound-dai-cells = <1>;
 			status = "disabled";
 		};
 	};
 
-	tegra_acsl_audio: acsl_audio {
-		compatible = "nvidia,tegra23x-acsl-audio";
-		iommus = <&smmu TEGRA_SID_APE>;
-		iommu-resv-regions = <0x0 0x0 0x0 0x40000000 0x0 0x60000000 0xffffffff 0xffffffff>;
-		status = "disabled";
-	};
-
 	hda@3510000 {
 		compatible = "nvidia,tegra194-hda", "nvidia,tegra30-hda";
-
+		hda,card-name = "tegra-hda-galen-t194";
 		iommus = <&smmu TEGRA_SID_HDA>;
 		reg = <0x0 0x3510000 0x0 0x10000>;
 		clocks = <&bpmp_clks TEGRA194_CLK_PLLP_OUT0>,
@@ -786,14 +698,6 @@
 		clock-names = "pllp_out0", "maud", "hda",
 				"hda2codec_2x",	"hda2hdmi";
 		interrupts = <0 161 0x04>;
-#if TEGRA_IOMMU_DT_VERSION >= DT_VERSION_2
-		interconnects = <&mc TEGRA194_MEMORY_CLIENT_HDAR>,
-				<&mc TEGRA194_MEMORY_CLIENT_HDAW>;
-		interconnect-names = "dma-mem", "dma-mem";
-#endif
-#if LINUX_VERSION >= 504
-		power-domains = <&bpmp TEGRA194_POWER_DOMAIN_DISP>;
-#endif
 		status = "disabled";
 	};
 

@@ -52,6 +52,7 @@
 #include <linux/clk/tegra.h>
 #include <linux/platform/tegra/latency_allowance.h>
 #include <linux/platform/tegra/mc.h>
+#include <soc/tegra/common.h>
 #include <linux/version.h>
 
 #include "dc.h"
@@ -67,7 +68,6 @@
 #include "panel/tegra-board-id.h"
 #include "dc_common.h"
 #include "hdmivrr.h"
-#include "panel/board-id.h"
 
 /* #define OF_DC_DEBUG */
 
@@ -303,7 +303,7 @@ static struct device_node *tegra_dc_get_panel_from_disp_board_id(
 		return ERR_PTR(-EINVAL);
 	}
 
-	tegra_dc_get_display_board_info(&display_board);
+	tegra_get_display_board_info(&display_board);
 	pr_info("display board info: id 0x%x, fab 0x%x\n",
 		display_board.board_id, display_board.fab);
 
@@ -355,7 +355,7 @@ static struct device_node *tegra_dc_get_panel_from_disp_board_id(
 		is_dsi_a_1200_800_8_0 = true;
 		break;
 	case BOARD_P1761:
-		if (tegra_dc_get_board_panel_id())
+		if (tegra_get_board_panel_id())
 			is_dsi_a_1200_1920_8_0 = true;
 		else
 			is_dsi_a_1200_800_8_0 = true;
@@ -480,7 +480,6 @@ static int tegra_dc_parse_panel_ops(struct platform_device *ndev,
 	}
 
 	pdata->panel_np = panel_np;
-	return ret;
 
 exit:
 	of_node_put(panel_np);
@@ -553,7 +552,7 @@ static int parse_disp_default_out(struct platform_device *ndev,
 {
 	u8 *addr;
 	u32 temp, u, n_outpins = 0;
-	int err = 0, hotplug_gpio = 0, hotplug_state = 0;
+	int err = 0, hotplug_gpio = 0;
 	enum of_gpio_flags flags;
 	const __be32 *p;
 	const char *temp_str0;
@@ -616,19 +615,15 @@ static int parse_disp_default_out(struct platform_device *ndev,
 	if (hotplug_gpio >= 0) {
 		pdata->default_out->hotplug_gpio = hotplug_gpio;
 	} else {
-		if (hotplug_gpio == -EPROBE_DEFER) {
-			dev_info(&ndev->dev,
-				"hpd-gpio failed with EPROBE_DEFER %d\n",
-				hotplug_gpio);
-			err = -EPROBE_DEFER;
-			goto parse_disp_defout_fail;
-		} else if (hotplug_gpio == -ENOENT) {
-			pdata->default_out->hotplug_gpio = hotplug_gpio;
+		if (hotplug_gpio == -ENOENT)
 			dev_info(&ndev->dev, "No hpd-gpio in DT\n");
-		} else {
-			pdata->default_out->hotplug_gpio = -EINVAL;
+		else
 			dev_warn(&ndev->dev, "invalid hpd-gpio %d\n",
 					hotplug_gpio);
+
+		if (hotplug_gpio == -EPROBE_DEFER) {
+			err = -EPROBE_DEFER;
+			goto parse_disp_defout_fail;
 		}
 	}
 
@@ -757,10 +752,9 @@ static int parse_disp_default_out(struct platform_device *ndev,
 		}
 	}
 
-	if (!of_property_read_s32(out_np,
-				"nvidia,out-hotplug-state", &hotplug_state)) {
-		pdata->default_out->hotplug_state = hotplug_state;
-		OF_DC_LOG("out-hotplug-state %d\n", hotplug_state);
+	if (!of_property_read_u32(out_np, "nvidia,out-hotplug-state", &temp)) {
+		pdata->default_out->hotplug_state = (unsigned) temp;
+		OF_DC_LOG("out-hotplug-state %d\n", temp);
 	}
 
 	/*
@@ -2251,15 +2245,6 @@ fail:
 	return err;
 }
 
-static void dc_dp_out_hotplug_deinit(struct device *dev)
-{
-	if (of_dp_hdmi_5v0 != NULL) {
-		regulator_disable(of_dp_hdmi_5v0);
-		devm_regulator_put(of_dp_hdmi_5v0);
-		of_dp_hdmi_5v0 = NULL;
-	}
-}
-
 static int dc_dp_out_postsuspend(void)
 {
 	if (of_dp_hdmi_5v0) {
@@ -2360,15 +2345,6 @@ static int dc_hdmi_hotplug_init(struct device *dev)
 	}
 dc_hdmi_hotplug_init_fail:
 	return err;
-}
-
-static void dc_hdmi_hotplug_deinit(struct device *dev)
-{
-	if (of_hdmi_vddio != NULL) {
-		regulator_disable(of_hdmi_vddio);
-		devm_regulator_put(of_hdmi_vddio);
-		of_hdmi_vddio = NULL;
-	}
 }
 
 static int dc_hdmi_postsuspend(void)
@@ -2490,64 +2466,20 @@ static int parse_imp_cursor_values(struct device_node *settings_np,
 			struct tegra_nvdisp_imp_settings *imp_settings,
 			int num_entries)
 {
-	u32 max_heads;
-	u8 *ctrl_num_arr = NULL;
-	u16 *fetch_slots_arr = NULL;
-	u32 *pipe_meter_arr = NULL;
-	u64 *dvfs_watermark_arr = NULL;
-	u64 *mempool_entries_arr = NULL;
+	u32 max_heads = tegra_dc_get_numof_dispheads();
+	u8 ctrl_num_arr[max_heads];
+	u16 fetch_slots_arr[max_heads];
+	u32 pipe_meter_arr[max_heads];
+	u64 dvfs_watermark_arr[max_heads];
+	u64 mempool_entries_arr[max_heads];
 	int ret = 0, i;
-
-	ret = tegra_dc_get_numof_dispheads();
-	if (ret < 0)
-		return ret;
-	max_heads = ret;
-
-	ctrl_num_arr = kcalloc(max_heads, sizeof(u8), GFP_KERNEL);
-	if (!ctrl_num_arr) {
-		pr_err("%s: Failed memory alloc for ctrl_num_arr\n", __func__);
-		ret = -ENOMEM;
-		goto fail;
-	}
-
-	fetch_slots_arr = kcalloc(max_heads, sizeof(u16), GFP_KERNEL);
-	if (!fetch_slots_arr) {
-		pr_err("%s: Failed memory alloc for fetch_slots_arr\n",
-				__func__);
-		ret = -ENOMEM;
-		goto fail;
-	}
-
-	pipe_meter_arr = kcalloc(max_heads, sizeof(u32), GFP_KERNEL);
-	if (!pipe_meter_arr) {
-		pr_err("%s: Failed memory alloc for pipe_meter_arr\n",
-				__func__);
-		ret = -ENOMEM;
-		goto fail;
-	}
-
-	dvfs_watermark_arr = kcalloc(max_heads, sizeof(u64), GFP_KERNEL);
-	if (!dvfs_watermark_arr) {
-		pr_err("%s: Failed memory alloc for dvfs_watermark_arr\n",
-				__func__);
-		ret = -ENOMEM;
-		goto fail;
-	}
-
-	mempool_entries_arr = kcalloc(max_heads, sizeof(u64), GFP_KERNEL);
-	if (!mempool_entries_arr) {
-		pr_err("%s: Failed memory alloc for mempool_entries_arr\n",
-				__func__);
-		ret = -ENOMEM;
-		goto fail;
-	}
 
 	ret = of_property_read_u8_array(settings_np,
 		"nvidia,imp_head_mapping",
 		ctrl_num_arr, num_entries);
 	if (ret) {
 		dev_err(&pdev->dev, "Can't parse nvidia,imp_head_mapping\n");
-		goto fail;
+		return ret;
 	}
 
 	ret = of_property_read_u16_array(settings_np,
@@ -2556,7 +2488,7 @@ static int parse_imp_cursor_values(struct device_node *settings_np,
 	if (ret) {
 		dev_err(&pdev->dev,
 			"Can't parse nvidia,cursor_fetch_meter_slots\n");
-		goto fail;
+		return ret;
 	}
 
 	ret = of_property_read_u64_array(settings_np,
@@ -2565,7 +2497,7 @@ static int parse_imp_cursor_values(struct device_node *settings_np,
 	if (ret) {
 		dev_err(&pdev->dev,
 			"Can't parse nvidia,cursor_dvfs_watermark_values\n");
-		goto fail;
+		return ret;
 	}
 
 	ret = of_property_read_u32_array(settings_np,
@@ -2574,7 +2506,7 @@ static int parse_imp_cursor_values(struct device_node *settings_np,
 	if (ret) {
 		dev_err(&pdev->dev,
 			"Can't parse nvidia,cursor_pipe_meter_values\n");
-		goto fail;
+		return ret;
 	}
 
 	ret = of_property_read_u64_array(settings_np,
@@ -2583,7 +2515,7 @@ static int parse_imp_cursor_values(struct device_node *settings_np,
 	if (ret) {
 		dev_err(&pdev->dev,
 			"Can't parse nvidia,cursor_mempool_buffer_entries\n");
-		goto fail;
+		return ret;
 	}
 
 	for (i = 0; i < num_entries; i++) {
@@ -2599,13 +2531,6 @@ static int parse_imp_cursor_values(struct device_node *settings_np,
 		head_entries->curs_dvfs_watermark = dvfs_watermark_arr[i];
 		head_entries->curs_mempool_entries = mempool_entries_arr[i];
 	}
-
-fail:
-	kfree(ctrl_num_arr);
-	kfree(fetch_slots_arr);
-	kfree(pipe_meter_arr);
-	kfree(dvfs_watermark_arr);
-	kfree(mempool_entries_arr);
 
 	return ret;
 }
@@ -2940,18 +2865,18 @@ struct tegra_dc_platform_data *of_dc_parse_platform_data(
 		case TEGRA_DC_OUT_FAKE_DP:
 		case TEGRA_DC_OUT_HDMI:
 		case TEGRA_DC_OUT_DP:
-			if (dc->current_topology.conn_inst == 0) {
+			if (dc && dc->current_topology.conn_inst == 0) {
 				pdata->conn_np =
-					of_find_node_by_path("host1x/sor");
+					of_find_node_by_path("/host1x/sor");
 			} else {
-				snprintf(dc_or_conn_node, 12, "host1x/sor%d",
+				snprintf(dc_or_conn_node, 13, "/host1x/sor%d",
 					dc->current_topology.conn_inst);
 				pdata->conn_np =
 					of_find_node_by_path(dc_or_conn_node);
 			}
 		break;
 		case TEGRA_DC_OUT_DSI:
-			pdata->conn_np = of_find_node_by_path("host1x/dsi");
+			pdata->conn_np = of_find_node_by_path("/host1x/dsi");
 			break;
 		break;
 		}
@@ -3040,6 +2965,13 @@ struct tegra_dc_platform_data *of_dc_parse_platform_data(
 		pdata->fb->flags = (unsigned long)temp;
 	}
 
+	if (of_property_read_bool(np, "nvidia,50hz-ss-war")) {
+		pdata->plld2_ss_enable = true;
+		OF_DC_LOG("dc plld2 ss enabled - %d\n", pdata->plld2_ss_enable);
+	} else {
+		pdata->plld2_ss_enable = false;
+	}
+
 	if (def_out->type == TEGRA_DC_OUT_DSI) {
 		/* TODO: Add crossbar implementation for DSI */
 		def_out->dsi = devm_kzalloc(&ndev->dev,
@@ -3103,7 +3035,6 @@ struct tegra_dc_platform_data *of_dc_parse_platform_data(
 			def_out->enable		= dc_dp_out_enable;
 			def_out->disable	= dc_dp_out_disable;
 			def_out->hotplug_init	= dc_dp_out_hotplug_init;
-			def_out->hotplug_deinit	= dc_dp_out_hotplug_deinit;
 			def_out->postsuspend	= dc_dp_out_postsuspend;
 		}
 	} else if (def_out->type == TEGRA_DC_OUT_HDMI) {
@@ -3156,7 +3087,6 @@ struct tegra_dc_platform_data *of_dc_parse_platform_data(
 			def_out->enable		= dc_hdmi_out_enable;
 			def_out->disable	= dc_hdmi_out_disable;
 			def_out->hotplug_init	= dc_hdmi_hotplug_init;
-			def_out->hotplug_deinit	= dc_hdmi_hotplug_deinit;
 			def_out->postsuspend	= dc_hdmi_postsuspend;
 		}
 	} else if (def_out->type == TEGRA_DC_OUT_LVDS) {
@@ -3185,10 +3115,8 @@ struct tegra_dc_platform_data *of_dc_parse_platform_data(
 
 	err = parse_disp_default_out(ndev, pdata);
 	if (err) {
-		if (err != -EPROBE_DEFER) {
-			dev_err(&ndev->dev,
-				"failed to parse disp_default_out,%d\n", err);
-		}
+		dev_err(&ndev->dev, "failed to parse disp_default_out,%d\n",
+				err);
 		goto fail_parse;
 	}
 
@@ -3382,14 +3310,6 @@ struct tegra_dc_platform_data *of_dc_parse_platform_data(
 			err = parse_nvdisp_cmu_data(cmu_np, pdata->nvdisp_cmu);
 			if (err)
 				goto fail_parse;
-		}
-
-		if ((pdata->default_out->type == TEGRA_DC_OUT_HDMI) ||
-			(pdata->default_out->type == TEGRA_DC_OUT_DP)) {
-			    if (!of_property_read_u32(np, "disable-seamless", &temp)) {
-				pdata->disable_seamless_kernel_handover = (bool)temp;
-			    }
-
 		}
 	}
 

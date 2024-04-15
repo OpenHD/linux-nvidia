@@ -125,6 +125,16 @@ phy_get_tx_power_index_8814a(
 		u8				Channel
 );
 
+u8
+PHY_GetTxPowerIndex8814A(
+		PADAPTER		Adapter,
+		enum rf_path		RFPath,
+		u8				Rate,
+		u8				BandWidth,
+		u8				Channel,
+	struct txpwr_idx_comp *tic
+);
+
 void
 PHY_SetTxPowerIndex_8814A(
 		PADAPTER		Adapter,
@@ -164,6 +174,10 @@ HAL_HandleSwChnl8814A(
 void
 PHY_SwChnlSynchronously8814A(PADAPTER		pAdapter,
 				u8			channel);
+
+void
+PHY_SwChnlAndSetBWModeCallback8814A(void *pContext);
+
 
 void
 PHY_HandleSwChnlAndSetBW8814A(

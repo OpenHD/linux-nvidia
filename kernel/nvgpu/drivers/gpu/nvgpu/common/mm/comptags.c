@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2019, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2017-2018, NVIDIA CORPORATION.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -40,9 +40,8 @@ int gk20a_comptaglines_alloc(struct gk20a_comptag_allocator *allocator,
 			0, len, 0);
 	if (addr < allocator->size) {
 		/* number zero is reserved; bitmap base is 1 */
-		nvgpu_assert(addr < U64(U32_MAX));
-		*offset = 1U + U32(addr);
-		nvgpu_bitmap_set(allocator->bitmap, U32(addr), len);
+		*offset = 1U + addr;
+		bitmap_set(allocator->bitmap, addr, len);
 	} else {
 		err = -ENOMEM;
 	}
@@ -63,10 +62,10 @@ void gk20a_comptaglines_free(struct gk20a_comptag_allocator *allocator,
 
 	WARN_ON(offset == 0U);
 	WARN_ON(addr > allocator->size);
-	WARN_ON((unsigned long)addr + (unsigned long)len > allocator->size);
+	WARN_ON(addr + len > allocator->size);
 
 	nvgpu_mutex_acquire(&allocator->lock);
-	nvgpu_bitmap_clear(allocator->bitmap, addr, len);
+	bitmap_clear(allocator->bitmap, addr, len);
 	nvgpu_mutex_release(&allocator->lock);
 }
 
@@ -74,7 +73,12 @@ int gk20a_comptag_allocator_init(struct gk20a *g,
 				 struct gk20a_comptag_allocator *allocator,
 				 unsigned long size)
 {
-	nvgpu_mutex_init(&allocator->lock);
+	int err = nvgpu_mutex_init(&allocator->lock);
+
+	if (err != 0) {
+		nvgpu_err(g, "Error in allocator.lock mutex initialization");
+		return err;
+	}
 
 	/*
 	 * 0th comptag is special and is never used. The base for this bitmap
@@ -83,9 +87,8 @@ int gk20a_comptag_allocator_init(struct gk20a *g,
 	size--;
 	allocator->bitmap = nvgpu_vzalloc(g,
 					  BITS_TO_LONGS(size) * sizeof(long));
-	if (allocator->bitmap == NULL) {
+	if (allocator->bitmap == NULL)
 		return -ENOMEM;
-	}
 
 	allocator->size = size;
 

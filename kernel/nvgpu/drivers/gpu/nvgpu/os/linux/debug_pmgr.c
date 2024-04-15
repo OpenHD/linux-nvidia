@@ -16,9 +16,9 @@
 
 #include <linux/debugfs.h>
 
-#include <nvgpu/pmu/pmgr.h>
-
 #include "os_linux.h"
+
+#include "pmgr/pmgr.h"
 
 static int pmgr_pwr_devices_get_power_u64(void *data, u64 *p)
 {

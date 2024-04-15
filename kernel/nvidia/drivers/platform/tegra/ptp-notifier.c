@@ -1,7 +1,7 @@
 /*
  * drivers/platform/tegra/ptp-notifier.c
  *
- * Copyright (c) 2018-2023, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2016-2019, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -18,10 +18,9 @@
 
 #include <linux/notifier.h>
 #include <linux/module.h>
-#include <linux/platform/tegra/ptp-notifier.h>
 
-static int (*get_systime[MAX_MAC_INSTANCES])(struct net_device *, void *, int);
-static struct net_device *registered_ndev[MAX_MAC_INSTANCES];
+static u64 (*get_systime)(void *);
+static void *param;
 static DEFINE_RAW_SPINLOCK(ptp_notifier_lock);
 static ATOMIC_NOTIFIER_HEAD(tegra_hwtime_chain_head);
 
@@ -47,23 +46,13 @@ int tegra_hwtime_notifier_call_chain(unsigned int val, void *v)
 	return notifier_to_errno(ret);
 }
 
-void tegra_register_hwtime_source(int (*func)(struct net_device *, void *, int),
-				  struct net_device *ndev)
+void tegra_register_hwtime_source(u64 (*func)(void *), void *data)
 {
 	unsigned long flags;
-	int index = 0;
 
 	raw_spin_lock_irqsave(&ptp_notifier_lock, flags);
-	for (index = 0; index < MAX_MAC_INSTANCES; index++) {
-		if (get_systime[index] == NULL) {
-			get_systime[index] = func;
-			registered_ndev[index] = ndev;
-			break;
-		}
-	}
-	if (index ==  MAX_MAC_INSTANCES)
-		pr_err("Maximum registrations reached\n");
-
+	get_systime = func;
+	param = data;
 	raw_spin_unlock_irqrestore(&ptp_notifier_lock, flags);
 
 	/* Notify HW time stamp update to registered clients.
@@ -74,78 +63,31 @@ void tegra_register_hwtime_source(int (*func)(struct net_device *, void *, int),
 }
 EXPORT_SYMBOL(tegra_register_hwtime_source);
 
-void tegra_unregister_hwtime_source(struct net_device *dev)
+void tegra_unregister_hwtime_source(void)
 {
 	unsigned long flags;
-	int index = 0;
 
 	raw_spin_lock_irqsave(&ptp_notifier_lock, flags);
-	for (index = 0; index < MAX_MAC_INSTANCES; index++) {
-		if (dev == registered_ndev[index])
-			break;
-	}
-	if (index == MAX_MAC_INSTANCES) {
-		pr_err("Trying to unregister non-registered hwtime source");
-		raw_spin_unlock_irqrestore(&ptp_notifier_lock, flags);
-		return;
-	}
-	get_systime[index] = NULL;
-	registered_ndev[index] = NULL;
+	get_systime = NULL;
+	param = NULL;
 	raw_spin_unlock_irqrestore(&ptp_notifier_lock, flags);
 }
 EXPORT_SYMBOL(tegra_unregister_hwtime_source);
 
-int tegra_get_hwtime(const char *intf_name, void *ts, int ts_type)
+int get_ptp_hwtime(u64 *ns)
 {
 	unsigned long flags;
-	int ret = 0, index = 0;
-	struct net_device *dev;
+	int ret = 0;
 
 	raw_spin_lock_irqsave(&ptp_notifier_lock, flags);
-	if (!intf_name || !ts) {
-		pr_err("passed Interface_name or time-stamp ptr is NULL");
-		ret = -1;
-		goto err_put;
-	}
-
-	/* dev_get_by_name increments the dev reference and requires dev_put */
-
-	dev = dev_get_by_name(&init_net, intf_name);
-
-	if (!dev) {
-		pr_debug("No device found for %s\n", intf_name);
-		ret = -EINVAL;
-		goto err_put;
-	}
-
-	if (!(dev->flags & IFF_UP)) {
-		pr_debug("interface is not up for %s\n", intf_name);
-		ret = -EINVAL;
-		goto err_put;
-	}
-
-	for (index = 0; index < MAX_MAC_INSTANCES; index++) {
-		if (dev == registered_ndev[index])
-			break;
-	}
-	if (index == MAX_MAC_INSTANCES) {
-		pr_debug("Interface: %s is not registered to get HW time", intf_name);
-		ret = -EINVAL;
-		goto err_put;
-	}
-
-	if (get_systime[index])
-		ret = (get_systime[index])(dev, ts, ts_type);
+	if (get_systime)
+		*ns = get_systime(param);
 	else
 		ret = -EINVAL;
-
-err_put:
-	if (dev)
-		dev_put(dev);
 	raw_spin_unlock_irqrestore(&ptp_notifier_lock, flags);
 
 	return ret;
 }
-EXPORT_SYMBOL(tegra_get_hwtime);
+EXPORT_SYMBOL(get_ptp_hwtime);
 
 MODULE_LICENSE("GPL");

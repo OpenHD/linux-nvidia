@@ -22,7 +22,6 @@
 #include "dc_priv_defs.h"
 #include "hw_nvdisp_nvdisp.h"
 #include "nvdisp_priv.h"
-#include <linux/nospec.h>
 
 static struct tegra_nvdisp_rg_region_regs {
 	u32 point;
@@ -197,17 +196,12 @@ int tegra_nvdisp_crc_enable(struct tegra_dc *dc,
 
 	switch (type) {
 	case TEGRA_DC_EXT_CRC_TYPE_RG_REGIONAL:
-		if (conf->region.id >= TEGRA_DC_EXT_MAX_REGIONS) {
+		id = conf->region.id;
+		if (id >= TEGRA_DC_EXT_MAX_REGIONS) {
 			ret = -EINVAL;
 			goto error_out;
 		}
-		/*
-		 * conf is coming from user. We are writing
-		 * at conf->region.id inside tegra_nvdisp_crc_region_enable.
-		 */
-		conf->region.id = array_index_nospec(conf->region.id,
-					TEGRA_DC_EXT_MAX_REGIONS);
-		id = conf->region.id;
+
 		ret = tegra_nvdisp_crc_region_enable(dc, conf);
 		if (ret)
 			goto error_out;

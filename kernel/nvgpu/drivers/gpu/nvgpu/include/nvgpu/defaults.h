@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2019, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2017-2018, NVIDIA CORPORATION.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -20,38 +20,14 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef NVGPU_DEFAULTS_H
-#define NVGPU_DEFAULTS_H
+#ifndef __NVGPU_DEFAULTS_H__
+#define __NVGPU_DEFAULTS_H__
 
-/**
- * @defgroup NVGPU_COMMON_DEFAULTS
- *
- * Default values used in NvGPU for timeouts, inits, etc.
+/*
+ * Default timeout used for channel watchdog and ctxsw timeout.
  */
+#define NVGPU_DEFAULT_GR_IDLE_TIMEOUT	3000
 
-/**
- * @ingroup NVGPU_COMMON_DEFAULTS
- *
- * The default timeout value defined in msec and used on a silicon
- * platform. This timeout value is used for channel watchdog, ctxsw timeouts, gr
- * timeouts, etc.
- */
-#define NVGPU_DEFAULT_POLL_TIMEOUT_MS	3000
-
-/**
- * @ingroup NVGPU_COMMON_DEFAULTS
- *
- * The default timeout value defined in msec and used for railgate delay. This
- * defines a value for auto-suspend delay.
- */
 #define NVGPU_DEFAULT_RAILGATE_IDLE_TIMEOUT 500
 
-/**
- * @ingroup NVGPU_COMMON_DEFAULTS
- *
- * The default timeout value defined in msec and used on FPGA platform. This
- * timeout value is used at places similar to NVGPU_DEFAULT_POLL_TIMEOUT_MS.
- */
-#define NVGPU_DEFAULT_FPGA_TIMEOUT_MS 100000U /* 100 sec */
-
-#endif /* NVGPU_DEFAULTS_H */
+#endif

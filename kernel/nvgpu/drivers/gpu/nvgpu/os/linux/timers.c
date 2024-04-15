@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2016-2018, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -55,27 +55,27 @@ static int nvgpu_timeout_is_pre_silicon(struct nvgpu_timeout *timeout)
  * If neither %NVGPU_TIMER_CPU_TIMER or %NVGPU_TIMER_RETRY_TIMER is passed then
  * a CPU timer is used by default.
  */
-int nvgpu_timeout_init_flags(struct gk20a *g, struct nvgpu_timeout *timeout,
+int nvgpu_timeout_init(struct gk20a *g, struct nvgpu_timeout *timeout,
 		       u32 duration, unsigned long flags)
 {
 	if (flags & ~NVGPU_TIMER_FLAG_MASK)
 		return -EINVAL;
 
-	(void) memset(timeout, 0, sizeof(*timeout));
+	memset(timeout, 0, sizeof(*timeout));
 
 	timeout->g = g;
 	timeout->flags = flags;
 
 	if (flags & NVGPU_TIMER_RETRY_TIMER)
-		timeout->retries.max_attempts = duration;
+		timeout->retries.max = duration;
 	else
-		timeout->time_duration = ktime_to_ns(ktime_add_ns(ktime_get(),
+		timeout->time = ktime_to_ns(ktime_add_ns(ktime_get(),
 					(s64)NSEC_PER_MSEC * duration));
 
 	return 0;
 }
 
-static int nvgpu_timeout_expired_msg_cpu(struct nvgpu_timeout *timeout,
+static int __nvgpu_timeout_expired_msg_cpu(struct nvgpu_timeout *timeout,
 					 void *caller,
 					 const char *fmt, va_list args)
 {
@@ -85,13 +85,13 @@ static int nvgpu_timeout_expired_msg_cpu(struct nvgpu_timeout *timeout,
 	if (nvgpu_timeout_is_pre_silicon(timeout))
 		return 0;
 
-	if (ktime_after(now, ns_to_ktime(timeout->time_duration))) {
+	if (ktime_after(now, ns_to_ktime(timeout->time))) {
 		if (!(timeout->flags & NVGPU_TIMER_SILENT_TIMEOUT)) {
 			char buf[128];
 
-			(void) vsnprintf(buf, sizeof(buf), fmt, args);
+			vsnprintf(buf, sizeof(buf), fmt, args);
 
-			nvgpu_err(g, "Timeout detected @ %pS %s", caller, buf);
+			nvgpu_err(g, "Timeout detected @ %pF %s", caller, buf);
 		}
 
 		return -ETIMEDOUT;
@@ -100,7 +100,7 @@ static int nvgpu_timeout_expired_msg_cpu(struct nvgpu_timeout *timeout,
 	return 0;
 }
 
-static int nvgpu_timeout_expired_msg_retry(struct nvgpu_timeout *timeout,
+static int __nvgpu_timeout_expired_msg_retry(struct nvgpu_timeout *timeout,
 					   void *caller,
 					   const char *fmt, va_list args)
 {
@@ -109,13 +109,13 @@ static int nvgpu_timeout_expired_msg_retry(struct nvgpu_timeout *timeout,
 	if (nvgpu_timeout_is_pre_silicon(timeout))
 		return 0;
 
-	if (timeout->retries.attempted >= timeout->retries.max_attempts) {
+	if (timeout->retries.attempted >= timeout->retries.max) {
 		if (!(timeout->flags & NVGPU_TIMER_SILENT_TIMEOUT)) {
 			char buf[128];
 
-			(void) vsnprintf(buf, sizeof(buf), fmt, args);
+			vsnprintf(buf, sizeof(buf), fmt, args);
 
-			nvgpu_err(g, "No more retries @ %pS %s", caller, buf);
+			nvgpu_err(g, "No more retries @ %pF %s", caller, buf);
 		}
 
 		return -ETIMEDOUT;
@@ -127,7 +127,7 @@ static int nvgpu_timeout_expired_msg_retry(struct nvgpu_timeout *timeout,
 }
 
 /**
- * nvgpu_timeout_expired_msg_impl - Check if a timeout has expired.
+ * __nvgpu_timeout_expired_msg - Check if a timeout has expired.
  *
  * @timeout - The timeout to check.
  * @caller  - Address of the caller of this function.
@@ -138,7 +138,7 @@ static int nvgpu_timeout_expired_msg_retry(struct nvgpu_timeout *timeout,
  * If a timeout occurs and %NVGPU_TIMER_SILENT_TIMEOUT is not set in the timeout
  * then a message is printed based on %fmt.
  */
-int nvgpu_timeout_expired_msg_impl(struct nvgpu_timeout *timeout,
+int __nvgpu_timeout_expired_msg(struct nvgpu_timeout *timeout,
 			      void *caller, const char *fmt, ...)
 {
 	int ret;
@@ -146,10 +146,10 @@ int nvgpu_timeout_expired_msg_impl(struct nvgpu_timeout *timeout,
 
 	va_start(args, fmt);
 	if (timeout->flags & NVGPU_TIMER_RETRY_TIMER)
-		ret = nvgpu_timeout_expired_msg_retry(timeout, caller, fmt,
+		ret = __nvgpu_timeout_expired_msg_retry(timeout, caller, fmt,
 						      args);
 	else
-		ret = nvgpu_timeout_expired_msg_cpu(timeout, caller, fmt,
+		ret = __nvgpu_timeout_expired_msg_cpu(timeout, caller, fmt,
 						    args);
 	va_end(args);
 
@@ -161,22 +161,21 @@ int nvgpu_timeout_expired_msg_impl(struct nvgpu_timeout *timeout,
  *
  * @timeout - The timeout to check.
  *
- * Returns true if the timeout is expired, false otherwise. In the case of
+ * Returns non-zero if the timeout is expired, zero otherwise. In the case of
  * retry timers this will not increment the underlying retry count. Also if the
  * timer has expired no messages will be printed.
  *
  * This function honors the pre-Si check as well.
  */
-bool nvgpu_timeout_peek_expired(struct nvgpu_timeout *timeout)
+int nvgpu_timeout_peek_expired(struct nvgpu_timeout *timeout)
 {
 	if (nvgpu_timeout_is_pre_silicon(timeout))
-		return false;
+		return 0;
 
 	if (timeout->flags & NVGPU_TIMER_RETRY_TIMER)
-		return timeout->retries.attempted >=
-					timeout->retries.max_attempts;
+		return timeout->retries.attempted >= timeout->retries.max;
 	else
-		return ktime_after(ktime_get(), ns_to_ktime(timeout->time_duration));
+		return ktime_after(ktime_get(), ns_to_ktime(timeout->time));
 }
 
 /**
@@ -243,23 +242,6 @@ s64 nvgpu_current_time_ms(void)
 }
 
 /**
- * nvgpu_current_time_us - Time in microseconds from a monotonic clock.
- *
- * Return a clock in microsecond units. The start time of the clock is
- * unspecified; the time returned can be compared with older ones to measure
- * durations. The source clock does not jump when the system clock is adjusted.
- */
-s64 nvgpu_current_time_us(void)
-{
-	return ktime_to_us(ktime_get());
-}
-
-u64 nvgpu_us_counter(void)
-{
-	return (u64)nvgpu_current_time_us();
-}
-
-/**
  * nvgpu_current_time_ns - Time in nanoseconds from a monotonic clock.
  *
  * Return a clock in nanosecond units. The start time of the clock is
@@ -269,18 +251,6 @@ u64 nvgpu_us_counter(void)
 s64 nvgpu_current_time_ns(void)
 {
 	return ktime_to_ns(ktime_get());
-}
-
-/**
- * nvgpu_hr_timestamp_us - Time in microseconds from a monotonic clock.
- *
- * Return a clock in microsecond units. The start time of the clock is
- * unspecified; the time returned can be compared with older ones to measure
- * durations. The source clock does not jump when the system clock is adjusted.
- */
-u64 nvgpu_hr_timestamp_us(void)
-{
-	return nvgpu_us_counter();
 }
 
 /**

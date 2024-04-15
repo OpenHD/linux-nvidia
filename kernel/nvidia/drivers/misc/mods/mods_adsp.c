@@ -1,8 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
- * This file is part of NVIDIA MODS kernel driver.
+ * mods_adsp.c - This file is part of NVIDIA MODS kernel driver.
  *
- * Copyright (c) 2014-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2014-2018, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA MODS kernel driver is free software: you can redistribute it and/or
  * modify it under the terms of the GNU General Public License,
@@ -22,23 +21,22 @@
 #include "mods_internal.h"
 #include <linux/tegra_nvadsp.h>
 
-int esc_mods_adsp_load(struct mods_client *client)
+int esc_mods_adsp_load(struct file *pfile)
 {
 	return nvadsp_os_load();
 }
 
-int esc_mods_adsp_start(struct mods_client *client)
+int esc_mods_adsp_start(struct file *pfile)
 {
 	return nvadsp_os_start();
 }
 
-int esc_mods_adsp_stop(struct mods_client *client)
+int esc_mods_adsp_stop(struct file *pfile)
 {
 	return nvadsp_os_suspend();
 }
 
-int esc_mods_adsp_run_app(struct mods_client *client,
-			  struct MODS_ADSP_RUN_APP_INFO *p)
+int esc_mods_adsp_run_app(struct file *pfile, struct MODS_ADSP_RUN_APP_INFO *p)
 {
 	int rc = -1;
 	int max_retry = 3;
@@ -49,7 +47,7 @@ int esc_mods_adsp_run_app(struct mods_client *client,
 
 	handle = nvadsp_app_load(p->app_name,  p->app_file_name);
 	if (!handle) {
-		cl_error("load adsp app fail");
+		mods_error_printk("load adsp app fail");
 		return -1;
 	}
 
@@ -61,14 +59,14 @@ int esc_mods_adsp_run_app(struct mods_client *client,
 		p_app_info = nvadsp_app_init(handle, NULL);
 
 	if (!p_app_info) {
-		cl_error("init adsp app fail");
+		mods_error_printk("init adsp app fail");
 		nvadsp_app_unload(handle);
 		return -1;
 	}
 
 	rc = nvadsp_app_start(p_app_info);
 	if (rc) {
-		cl_error("start adsp app fail");
+		mods_error_printk("start adsp app fail");
 		goto failed;
 	}
 
@@ -78,10 +76,10 @@ int esc_mods_adsp_run_app(struct mods_client *client,
 		if (rc == -ERESTARTSYS)
 			continue;
 		else if (rc == 0) {
-			cl_error("app timeout(%d)", p->timeout);
+			mods_error_printk("app timeout(%d)", p->timeout);
 			rc = -1;
 		} else if (rc < 0) {
-			cl_error("run app failed, err=%d\n", rc);
+			mods_error_printk("run app failed, err=%d\n", rc);
 			rc = -1;
 		} else
 			rc = 0;

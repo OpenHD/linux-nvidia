@@ -18,6 +18,7 @@
 
 struct tegra_gte_ev_desc {
 	int id;
+	int gid;
 	u32 ev_bit;
 	u32 slice;
 };

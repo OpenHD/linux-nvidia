@@ -3,7 +3,7 @@
  *
  * Tegra NvDLA Driver
  *
- * Copyright (c) 2016-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2016-2021, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -36,7 +36,7 @@
 #define MAX_NVDLA_EMU_PREFENCES_PER_TASK	16
 #define MAX_NVDLA_EMU_POSTFENCES_PER_TASK	16
 #define MAX_NVDLA_IN_STATUS_PER_TASK		MAX_NVDLA_PREFENCES_PER_TASK
-#define MAX_NVDLA_OUT_STATUS_PER_TASK		36
+#define MAX_NVDLA_OUT_STATUS_PER_TASK		MAX_NVDLA_POSTFENCES_PER_TASK
 #define MAX_NVDLA_OUT_TIMESTAMPS_PER_TASK	32
 
 /**
@@ -70,17 +70,13 @@ struct nvdla_ping_args {
  * @share_id		identifier of handle to be shared
  * @offset		offset within the shared memory
  * @access_flags	access with which memory is intended to be shared
- * @import_id		memory import transaction identifier
+ * @reserved		reserved for future use
  **/
 struct nvdla_mem_share_handle {
 	__u32 share_id;
 	__u32 offset;
-#define NVDLA_MEM_ACCESS_NONE (0U)
-#define NVDLA_MEM_ACCESS_READ (1U << 0U)
-#define NVDLA_MEM_ACCESS_WRITE (1U << 1U)
-#define NVDLA_MEM_ACCESS_READ_WRITE (NVDLA_MEM_ACCESS_READ | NVDLA_MEM_ACCESS_WRITE)
 	__u32 access_flags;
-	__u32 import_id;
+	__u32 reserved;
 };
 
 /**
@@ -190,7 +186,7 @@ struct nvdla_ioctl_submit_task {
 	__u8 num_sof_timestamps;
 	__u8 num_eof_timestamps;
 	__u8 reserved0[1];
-#define MAX_NVDLA_BUFFERS_PER_TASK (384U)
+#define NVDLA_MAX_BUFFERS_PER_TASK (6144)
 	__u32 num_addresses;
 	__u16 flags;
 	__u16 reserved1;

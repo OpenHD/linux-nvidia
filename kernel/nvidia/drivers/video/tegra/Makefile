@@ -1,8 +1,6 @@
 obj-$(CONFIG_TEGRA_CAMERA_PLATFORM) += camera/
 obj-$(CONFIG_TEGRA_GRHOST) += host/
-
-obj-$(CONFIG_ARCH_TEGRA) += nvmap/
-
+obj-$(CONFIG_TEGRA_NVMAP) += nvmap/
 obj-$(CONFIG_TEGRA_GR_VIRTUALIZATION) += virt/
 
 GCOV_PROFILE := y

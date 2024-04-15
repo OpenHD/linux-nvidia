@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2014-2019, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -24,9 +24,6 @@
 #include <linux/module.h>
 
 #include "governor.h"
-
-#define CREATE_TRACE_POINTS
-#include <trace/events/watermark_gov.h>
 
 struct wmark_gov_param {
 	unsigned int		block_window;
@@ -170,7 +167,6 @@ static int devfreq_watermark_target_freq(struct devfreq *df,
 					 unsigned long *freq)
 {
 	struct wmark_gov_info *wmarkinfo = df->data;
-	struct platform_device *pdev = wmarkinfo->pdev;
 	struct devfreq_dev_status dev_stat;
 	unsigned long long load, relation, ideal_freq;
 	ktime_t current_time = ktime_get();
@@ -230,7 +226,6 @@ static int devfreq_watermark_target_freq(struct devfreq *df,
 
 	/* update the frequency */
 	*freq = freqlist_round(wmarkinfo, wmarkinfo->average_target_freq);
-	trace_devfreq_watermark_target_freq(pdev->name, load, *freq);
 
 	/* check if frequency actually got updated */
 	if (*freq == dev_stat.current_frequency)
@@ -694,6 +689,6 @@ static void __exit devfreq_watermark_exit(void)
 	devfreq_remove_governor(&devfreq_watermark_active);
 }
 
-subsys_initcall(devfreq_watermark_init);
+rootfs_initcall(devfreq_watermark_init);
 module_exit(devfreq_watermark_exit);
 MODULE_LICENSE("GPL v2");

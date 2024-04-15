@@ -22,9 +22,10 @@
 #ifndef NVGPU_BSEARCH_H
 #define NVGPU_BSEARCH_H
 
-#include <nvgpu/types.h>
-
-void *nvgpu_bsearch(const void *key, const void *base, size_t nitems, size_t size,
-		int (*compar)(const void *a, const void *b));
+#ifdef __KERNEL__
+#include <linux/bsearch.h>
+#elif defined(__NVGPU_POSIX__)
+#include <stdlib.h>
+#endif
 
 #endif /*NVGPU_BSEARCH_H*/

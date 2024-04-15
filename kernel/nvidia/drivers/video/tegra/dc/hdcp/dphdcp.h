@@ -75,6 +75,7 @@ struct tegra_dphdcp {
 	u8				hpd;
 	u8				repeater;
 	void				*ta_ctx;
+	bool				policy_initialized;
 };
 
 #ifdef CONFIG_DPHDCP

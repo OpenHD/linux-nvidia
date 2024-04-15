@@ -1,7 +1,7 @@
 /*
  * imx214.c - imx214 sensor driver
  *
- * Copyright (c) 2013-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013-2019, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -20,7 +20,6 @@
 #include <linux/uaccess.h>
 #include <linux/gpio.h>
 #include <linux/module.h>
-#include <linux/version.h>
 
 #include <linux/seq_file.h>
 #include <linux/of.h>
@@ -289,11 +288,11 @@ static int imx214_power_on(struct camera_common_data *s_data)
 	/* sleep calls in the sequence below are for internal device
 	 * signal propagation as specified by sensor vendor */
 
-	if (gpio_is_valid(pw->reset_gpio))
+	if (pw->reset_gpio)
 		gpio_set_value(pw->reset_gpio, 0);
-	if (gpio_is_valid(pw->af_gpio))
+	if (pw->af_gpio)
 		gpio_set_value(pw->af_gpio, 1);
-	if (gpio_is_valid(pw->pwdn_gpio))
+	if (pw->pwdn_gpio)
 		gpio_set_value(pw->pwdn_gpio, 0);
 	usleep_range(10, 20);
 
@@ -308,9 +307,9 @@ static int imx214_power_on(struct camera_common_data *s_data)
 		goto imx214_iovdd_fail;
 
 	udelay(1);
-	if (gpio_is_valid(pw->reset_gpio))
+	if (pw->reset_gpio)
 		gpio_set_value(pw->reset_gpio, 1);
-	if (gpio_is_valid(pw->pwdn_gpio))
+	if (pw->pwdn_gpio)
 		gpio_set_value(pw->pwdn_gpio, 1);
 
 	usleep_range(300, 310);
@@ -322,7 +321,7 @@ imx214_iovdd_fail:
 	regulator_disable(pw->avdd);
 
 imx214_avdd_fail:
-	if (gpio_is_valid(pw->af_gpio))
+	if (pw->af_gpio)
 		gpio_set_value(pw->af_gpio, 0);
 
 	dev_err(dev, "%s failed.\n", __func__);
@@ -352,11 +351,11 @@ static int imx214_power_off(struct camera_common_data *s_data)
 	 * signal propagation as specified by sensor vendor */
 
 	usleep_range(1, 2);
-	if (gpio_is_valid(pw->reset_gpio))
+	if (pw->reset_gpio)
 		gpio_set_value(pw->reset_gpio, 0);
-	if (gpio_is_valid(pw->af_gpio))
+	if (pw->af_gpio)
 		gpio_set_value(pw->af_gpio, 0);
-	if (gpio_is_valid(pw->pwdn_gpio))
+	if (pw->pwdn_gpio)
 		gpio_set_value(pw->pwdn_gpio, 0);
 	usleep_range(1, 2);
 
@@ -487,9 +486,7 @@ static struct v4l2_subdev_video_ops imx214_subdev_video_ops = {
 	.g_mbus_fmt	= camera_common_g_fmt,
 	.try_mbus_fmt	= camera_common_try_fmt,
 	.enum_mbus_fmt	= camera_common_enum_fmt,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 	.g_mbus_config	= camera_common_g_mbus_config,
-#endif
 };
 
 static struct v4l2_subdev_core_ops imx214_subdev_core_ops = {
@@ -498,9 +495,6 @@ static struct v4l2_subdev_core_ops imx214_subdev_core_ops = {
 
 static struct v4l2_subdev_pad_ops imx214_subdev_pad_ops = {
 	.enum_mbus_code = camera_common_enum_mbus_code,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-	.get_mbus_config	= camera_common_get_mbus_config,
-#endif
 };
 
 static struct v4l2_subdev_ops imx214_subdev_ops = {
@@ -510,7 +504,7 @@ static struct v4l2_subdev_ops imx214_subdev_ops = {
 };
 
 static struct of_device_id imx214_of_match[] = {
-	{ .compatible = "sony,imx214", },
+	{ .compatible = "nvidia,imx214", },
 	{ },
 };
 

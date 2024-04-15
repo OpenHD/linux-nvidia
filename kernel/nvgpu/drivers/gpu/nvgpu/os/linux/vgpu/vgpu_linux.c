@@ -1,7 +1,7 @@
 /*
  * Virtualized GPU for Linux
  *
- * Copyright (c) 2018-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -22,39 +22,24 @@
 #include <linux/pm_runtime.h>
 #include <linux/pm_qos.h>
 #include <linux/platform_device.h>
-#ifdef CONFIG_NVGPU_TEGRA_FUSE
-#include <linux/version.h>
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0)
 #include <soc/tegra/chip-id.h>
-#else
-#include <soc/tegra/fuse.h>
-#endif
-#endif
 
 #include <nvgpu/kmem.h>
 #include <nvgpu/bug.h>
 #include <nvgpu/enabled.h>
-#include <nvgpu/errata.h>
 #include <nvgpu/debug.h>
 #include <nvgpu/soc.h>
+#include <nvgpu/ctxsw_trace.h>
 #include <nvgpu/defaults.h>
 #include <nvgpu/ltc.h>
 #include <nvgpu/channel.h>
-#include <nvgpu/tsg.h>
-#include <nvgpu/regops.h>
 #include <nvgpu/clk_arb.h>
-#include <nvgpu/gr/gr.h>
-#include <nvgpu/nvgpu_init.h>
-#include <nvgpu/cic_rm.h>
-
-#include <nvgpu/vgpu/os_init_hal_vgpu.h>
 
 #include "vgpu_linux.h"
-#include "common/vgpu/gr/fecs_trace_vgpu.h"
-#include "common/vgpu/clk_vgpu.h"
-#include "common/vgpu/ivc/comm_vgpu.h"
-#include "common/vgpu/intr/intr_vgpu.h"
-#include "common/vgpu/init/init_vgpu.h"
+#include "vgpu/fecs_trace_vgpu.h"
+#include "vgpu/clk_vgpu.h"
+#include "gk20a/regops_gk20a.h"
+#include "gm20b/hal_gm20b.h"
 
 #include "os/linux/module.h"
 #include "os/linux/os_linux.h"
@@ -63,7 +48,6 @@
 #include "os/linux/driver_common.h"
 #include "os/linux/platform_gk20a.h"
 #include "os/linux/vgpu/platform_vgpu_tegra.h"
-#include "os/linux/dmabuf_priv.h"
 
 struct vgpu_priv_data *vgpu_get_priv_data(struct gk20a *g)
 {
@@ -75,13 +59,6 @@ struct vgpu_priv_data *vgpu_get_priv_data(struct gk20a *g)
 static void vgpu_remove_support(struct gk20a *g)
 {
 	vgpu_remove_support_common(g);
-
-	/* free mappings to registers, etc*/
-
-	if (g->bar1) {
-		iounmap((void __iomem *)g->bar1);
-		g->bar1 = 0U;
-	}
 }
 
 static void vgpu_init_vars(struct gk20a *g, struct gk20a_platform *platform)
@@ -89,33 +66,29 @@ static void vgpu_init_vars(struct gk20a *g, struct gk20a_platform *platform)
 	struct nvgpu_os_linux *l = nvgpu_os_linux_from_gk20a(g);
 	struct vgpu_priv_data *priv = vgpu_get_priv_data(g);
 
-	nvgpu_spinlock_init(&g->power_spinlock);
-
 	nvgpu_mutex_init(&g->power_lock);
+	nvgpu_mutex_init(&g->ctxsw_disable_lock);
 	nvgpu_mutex_init(&g->clk_arb_enable_lock);
 	nvgpu_mutex_init(&g->cg_pg_lock);
-	nvgpu_rwsem_init(&g->deterministic_busy);
 
 	nvgpu_mutex_init(&priv->vgpu_clk_get_freq_lock);
 
-	nvgpu_mutex_init(&l->ctrl_privs_lock);
-	nvgpu_init_list_node(&l->ctrl_privs);
+	nvgpu_mutex_init(&l->ctrl.privs_lock);
+	nvgpu_init_list_node(&l->ctrl.privs);
 
-	g->regs_saved = g->regs;
-	g->bar1_saved = g->bar1;
+	l->regs_saved = l->regs;
+	l->bar1_saved = l->bar1;
 
 	nvgpu_atomic_set(&g->clk_arb_global_nr, 0);
 
+	g->aggressive_sync_destroy = platform->aggressive_sync_destroy;
 	g->aggressive_sync_destroy_thresh = platform->aggressive_sync_destroy_thresh;
-	nvgpu_set_enabled(g, NVGPU_HAS_SYNCPOINTS, platform->has_syncpoints);
+	__nvgpu_set_enabled(g, NVGPU_HAS_SYNCPOINTS, platform->has_syncpoints);
 	g->ptimer_src_freq = platform->ptimer_src_freq;
-	nvgpu_set_enabled(g, NVGPU_CAN_RAILGATE, platform->can_railgate_init);
+	__nvgpu_set_enabled(g, NVGPU_CAN_RAILGATE, platform->can_railgate_init);
 	g->railgate_delay = platform->railgate_delay_init;
 
-	g->mm.disable_bigpage = NVGPU_CPU_PAGE_SIZE < SZ_64K;
-	nvgpu_set_enabled(g, NVGPU_MM_UNIFIED_MEMORY,
-			    platform->unified_memory);
-	nvgpu_set_enabled(g, NVGPU_MM_UNIFY_ADDRESS_SPACES,
+	__nvgpu_set_enabled(g, NVGPU_MM_UNIFY_ADDRESS_SPACES,
 			    platform->unify_address_spaces);
 }
 
@@ -140,26 +113,22 @@ static int vgpu_init_support(struct platform_device *pdev)
 			err = PTR_ERR(regs);
 			goto fail;
 		}
-		g->bar1 = (uintptr_t)regs;
+		l->bar1 = regs;
 		l->bar1_mem = r;
 	}
 
 	nvgpu_mutex_init(&g->dbg_sessions_lock);
-#if defined(CONFIG_NVGPU_CYCLESTATS)
-	nvgpu_mutex_init(&g->cs_lock);
-#endif
+	nvgpu_mutex_init(&g->client_lock);
 
 	nvgpu_init_list_node(&g->profiler_objects);
 
-#ifdef CONFIG_NVGPU_DEBUGGER
 	g->dbg_regops_tmp_buf = nvgpu_kzalloc(g, SZ_4K);
 	if (!g->dbg_regops_tmp_buf) {
 		nvgpu_err(g, "couldn't allocate regops tmp buf");
-		err = -ENOMEM;
+		return -ENOMEM;
 	}
 	g->dbg_regops_tmp_buf_ops =
 		SZ_4K / sizeof(g->dbg_regops_tmp_buf[0]);
-#endif
 
 	g->remove_support = vgpu_remove_support;
 	return 0;
@@ -178,19 +147,15 @@ int vgpu_pm_prepare_poweroff(struct device *dev)
 
 	nvgpu_mutex_acquire(&g->power_lock);
 
-	if (nvgpu_is_powered_off(g))
+	if (!g->power_on)
 		goto done;
 
-	if (g->ops.channel.suspend_all_serviceable_ch != NULL) {
-		ret = g->ops.channel.suspend_all_serviceable_ch(g);
-	}
-
-	if (ret != 0) {
+	if (g->ops.fifo.channel_suspend)
+		ret = g->ops.fifo.channel_suspend(g);
+	if (ret)
 		goto done;
-	}
 
-	nvgpu_set_power_state(g, NVGPU_STATE_POWERED_OFF);
-
+	g->power_on = false;
  done:
 	nvgpu_mutex_release(&g->power_lock);
 
@@ -207,45 +172,74 @@ int vgpu_pm_finalize_poweron(struct device *dev)
 
 	nvgpu_mutex_acquire(&g->power_lock);
 
-	if (nvgpu_is_powered_on(g))
+	if (g->power_on)
 		goto done;
 
-	nvgpu_set_power_state(g, NVGPU_STATE_POWERING_ON);
+	g->power_on = true;
 
-	err = vgpu_finalize_poweron_common(g);
+	vgpu_detect_chip(g);
+	err = vgpu_init_hal(g);
 	if (err)
 		goto done;
 
-	if (!l->dev_nodes_created) {
-		err = gk20a_user_nodes_init(dev);
-		if (err) {
-			goto done;
-		}
+	if (g->ops.ltc.init_fs_state)
+		g->ops.ltc.init_fs_state(g);
 
-		l->dev_nodes_created = true;
+	err = nvgpu_init_ltc_support(g);
+	if (err) {
+		nvgpu_err(g, "failed to init ltc");
+		goto done;
 	}
 
-	/* Initialize linux specific flags */
-	gk20a_init_linux_characteristics(g);
+	err = vgpu_init_mm_support(g);
+	if (err) {
+		nvgpu_err(g, "failed to init gk20a mm");
+		goto done;
+	}
+
+	err = vgpu_init_fifo_support(g);
+	if (err) {
+		nvgpu_err(g, "failed to init gk20a fifo");
+		goto done;
+	}
+
+	err = vgpu_init_gr_support(g);
+	if (err) {
+		nvgpu_err(g, "failed to init gk20a gr");
+		goto done;
+	}
+
+	err = nvgpu_clk_arb_init_arbiter(g);
+	if (err) {
+		nvgpu_err(g, "failed to init clk arb");
+		goto done;
+	}
+
+	err = g->ops.chip_init_gpu_characteristics(g);
+	if (err) {
+		nvgpu_err(g, "failed to init gk20a gpu characteristics");
+		goto done;
+	}
 
 	err = nvgpu_finalize_poweron_linux(l);
 	if (err)
 		goto done;
 
+#ifdef CONFIG_GK20A_CTXSW_TRACE
+	gk20a_ctxsw_trace_init(g);
+#endif
 	gk20a_sched_ctrl_init(g);
+	gk20a_channel_resume(g);
 
 	g->sw_ready = true;
 
-	nvgpu_set_power_state(g, NVGPU_STATE_POWERED_ON);
-
 done:
+	if (err)
+		g->power_on = false;
+
 	nvgpu_mutex_release(&g->power_lock);
 	return err;
 }
-
-#ifdef CONFIG_GK20A_PM_QOS
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 
 static int vgpu_qos_notify(struct notifier_block *nb,
 			  unsigned long n, void *data)
@@ -254,12 +248,12 @@ static int vgpu_qos_notify(struct notifier_block *nb,
 			container_of(nb, struct gk20a_scale_profile,
 			qos_notify_block);
 	struct gk20a *g = get_gk20a(profile->dev);
-	u64 max_freq;
+	u32 max_freq;
 	int err;
 
 	nvgpu_log_fn(g, " ");
 
-	max_freq = (u64)pm_qos_read_max_bound(PM_QOS_GPU_FREQ_BOUNDS) * 1000UL;
+	max_freq = (u32)pm_qos_read_max_bound(PM_QOS_GPU_FREQ_BOUNDS);
 	err = vgpu_plat_clk_cap_rate(profile->dev, max_freq);
 	if (err)
 		nvgpu_err(g, "%s failed, err=%d", __func__, err);
@@ -299,12 +293,13 @@ static void vgpu_pm_qos_remove(struct device *dev)
 	g->scale_profile = NULL;
 }
 
-#endif
-#endif
-
 static int vgpu_pm_init(struct device *dev)
 {
 	struct gk20a *g = get_gk20a(dev);
+	struct gk20a_platform *platform = gk20a_get_platform(dev);
+	struct nvgpu_os_linux *l = nvgpu_os_linux_from_gk20a(g);
+	unsigned long *freqs;
+	int num_freqs;
 	int err = 0;
 
 	nvgpu_log_fn(g, " ");
@@ -317,13 +312,22 @@ static int vgpu_pm_init(struct device *dev)
 	if (IS_ENABLED(CONFIG_GK20A_DEVFREQ))
 		gk20a_scale_init(dev);
 
-#ifdef CONFIG_GK20A_PM_QOS
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+	if (l->devfreq) {
+		/* set min/max frequency based on frequency table */
+		err = platform->get_clk_freqs(dev, &freqs, &num_freqs);
+		if (err)
+			return err;
+
+		if (num_freqs < 1)
+			return -EINVAL;
+
+		l->devfreq->min_freq = freqs[0];
+		l->devfreq->max_freq = freqs[num_freqs - 1];
+	}
+
 	err = vgpu_pm_qos_init(dev);
 	if (err)
 		return err;
-#endif
-#endif
 
 	return err;
 }
@@ -348,7 +352,6 @@ int vgpu_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 	gk20a = &l->g;
-	gk20a->log_mask = NVGPU_DEFAULT_DBG_MASK;
 
 	nvgpu_log_fn(gk20a, " ");
 
@@ -356,24 +359,15 @@ int vgpu_probe(struct platform_device *pdev)
 
 	nvgpu_kmem_init(gk20a);
 
-	err = nvgpu_init_errata_flags(gk20a);
-	if (err) {
-		kfree(gk20a);
-		return err;
-	}
-
 	err = nvgpu_init_enabled_flags(gk20a);
 	if (err) {
-		nvgpu_free_errata_flags(gk20a);
 		kfree(gk20a);
 		return err;
 	}
 
 	l->dev = dev;
-#ifdef CONFIG_NVGPU_TEGRA_FUSE
 	if (tegra_platform_is_vdk())
-		nvgpu_set_enabled(gk20a, NVGPU_IS_FMODEL, true);
-#endif
+		__nvgpu_set_enabled(gk20a, NVGPU_IS_FMODEL, true);
 
 	gk20a->is_virtual = true;
 
@@ -386,36 +380,19 @@ int vgpu_probe(struct platform_device *pdev)
 	platform->g = gk20a;
 	platform->vgpu_priv = priv;
 
-	err = vgpu_init_support(pdev);
-	if (err != 0) {
-		kfree(l);
-		return -ENOMEM;
-	}
-
-	err = nvgpu_cic_rm_setup(gk20a);
-	if (err != 0) {
-		nvgpu_err(gk20a, "CIC-RM setup failed");
+	err = gk20a_user_init(dev, INTERFACE_NAME, &nvgpu_class);
+	if (err)
 		return err;
-	}
 
-	err = nvgpu_cic_rm_init_vars(gk20a);
-	if (err != 0) {
-		nvgpu_err(gk20a, "CIC-RM init vars failed");
-		(void) nvgpu_cic_rm_remove(gk20a);
-		return err;
-	}
-
-	nvgpu_read_support_gpu_tools(gk20a);
+	vgpu_init_support(pdev);
 
 	vgpu_init_vars(gk20a, platform);
 
 	init_rwsem(&l->busy_lock);
 
-	nvgpu_spinlock_init(&gk20a->mc.enable_lock);
+	nvgpu_spinlock_init(&gk20a->mc_enable_lock);
 
-	nvgpu_spinlock_init(&gk20a->mc.intr_lock);
-
-	gk20a->ch_wdt_init_limit_ms = platform->ch_wdt_init_limit_ms;
+	gk20a->ch_wdt_timeout_ms = platform->ch_wdt_timeout_ms;
 
 	/* Initialize the platform interface. */
 	err = platform->probe(dev);
@@ -433,12 +410,6 @@ int vgpu_probe(struct platform_device *pdev)
 			nvgpu_err(gk20a, "late probe failed");
 			return err;
 		}
-	}
-
-	err = gk20a_power_node_init(dev);
-	if (err) {
-		nvgpu_err(gk20a, "power_node creation failed");
-		return err;
 	}
 
 	err = vgpu_comm_init(gk20a);
@@ -468,9 +439,8 @@ int vgpu_probe(struct platform_device *pdev)
 
 	err = nvgpu_thread_create(&priv->intr_handler, gk20a,
 			vgpu_intr_thread, "gk20a");
-	if (err) {
+	if (err)
 		return err;
-	}
 
 	gk20a_debug_init(gk20a, "gpu.0");
 
@@ -478,32 +448,15 @@ int vgpu_probe(struct platform_device *pdev)
 	dev->dma_parms = &l->dma_parms;
 	dma_set_max_seg_size(dev, UINT_MAX);
 
-	/*
-	 * A default of 16GB is the largest supported DMA size that is
-	 * acceptable to all currently supported Tegra SoCs.
-	 */
-	if (!platform->dma_mask)
-		platform->dma_mask = DMA_BIT_MASK(34);
-
-	dma_set_mask(dev, platform->dma_mask);
-	dma_set_coherent_mask(dev, platform->dma_mask);
-	dma_set_seg_boundary(dev, platform->dma_mask);
-
-	gk20a->poll_timeout_default = NVGPU_DEFAULT_POLL_TIMEOUT_MS;
+	gk20a->gr_idle_timeout_default = NVGPU_DEFAULT_GR_IDLE_TIMEOUT;
 	gk20a->timeouts_disabled_by_user = false;
 	nvgpu_atomic_set(&gk20a->timeouts_disabled_refcount, 0);
-	gk20a->tsg_dbg_timeslice_max_us = NVGPU_TSG_DBG_TIMESLICE_MAX_US_DEFAULT;
+
 	vgpu_create_sysfs(dev);
+	gk20a_init_gr(gk20a);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
-	nvgpu_log_info(gk20a, "total ram pages : %lu", totalram_pages());
-#else
 	nvgpu_log_info(gk20a, "total ram pages : %lu", totalram_pages);
-#endif
-	gk20a->max_comptag_mem = totalram_size_in_mb;
-
-	nvgpu_mutex_init(&l->dmabuf_priv_list_lock);
-	nvgpu_init_list_node(&l->dmabuf_priv_list);
+	gk20a->gr.max_comptag_mem = totalram_size_in_mb;
 
 	nvgpu_ref_init(&gk20a->refcount);
 
@@ -514,29 +467,29 @@ int vgpu_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct gk20a *g = get_gk20a(dev);
-	struct nvgpu_os_linux *l = nvgpu_os_linux_from_gk20a(g);
 
 	nvgpu_log_fn(g, " ");
 
-	gk20a_dma_buf_priv_list_clear(l);
-	nvgpu_mutex_destroy(&l->dmabuf_priv_list_lock);
-
-#ifdef CONFIG_GK20A_PM_QOS
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 	vgpu_pm_qos_remove(dev);
-#endif
-#endif
 	if (g->remove_support)
 		g->remove_support(g);
 
 	vgpu_comm_deinit();
 	gk20a_sched_ctrl_cleanup(g);
-	gk20a_user_nodes_deinit(dev);
+	gk20a_user_deinit(dev, &nvgpu_class);
 	vgpu_remove_sysfs(dev);
 	gk20a_get_platform(dev)->g = NULL;
-	nvgpu_put(g);
+	gk20a_put(g);
 
 	return 0;
+}
+
+bool vgpu_is_reduced_bar1(struct gk20a *g)
+{
+	struct fifo_gk20a *f = &g->fifo;
+	struct nvgpu_os_linux *l = nvgpu_os_linux_from_gk20a(g);
+
+	return resource_size(l->bar1_mem) == (resource_size_t)f->userd.size;
 }
 
 int vgpu_tegra_suspend(struct device *dev)
@@ -569,9 +522,4 @@ int vgpu_tegra_resume(struct device *dev)
 		nvgpu_err(g, "vGPU resume failed\n");
 
 	return err;
-}
-
-int vgpu_init_hal_os(struct gk20a *g)
-{
-	return 0;
 }

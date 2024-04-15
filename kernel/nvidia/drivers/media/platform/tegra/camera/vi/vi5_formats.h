@@ -1,8 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * NVIDIA Tegra Video Input Device Driver VI5 formats
  *
- * Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * Copyright (c) 2017-2019, NVIDIA CORPORATION.  All rights reserved.
  *
  * Author: Bhanu Murthy V <bmurthyv@nvidia.com>
  *
@@ -97,16 +96,6 @@ static const struct tegra_video_format vi5_video_formats[] = {
 	TEGRA_VIDEO_FORMAT(RAW8, 8, SBGGR8_1X8, 1, 1, T_R8,
 				RAW8, SBGGR8, "BGBG.. GRGR.."),
 
-    /* RAW 14 */
-	TEGRA_VIDEO_FORMAT(RAW14, 14, SRGGB14_1X14, 2, 1, T_R16,
-				RAW14, SRGGB14, "RGRG.. GBGB.."),
-	TEGRA_VIDEO_FORMAT(RAW14, 14, SGRBG14_1X14, 2, 1, T_R16,
-				RAW14, SGRBG14, "GRGR.. BGBG.."),
-	TEGRA_VIDEO_FORMAT(RAW14, 14, SGBRG14_1X14, 2, 1, T_R16,
-				RAW14, SGBRG14, "GBGB.. RGRG.."),
-	TEGRA_VIDEO_FORMAT(RAW14, 14, SBGGR14_1X14, 2, 1, T_R16,
-				RAW14, SBGGR14, "BGBG.. GRGR.."),
-
 	/* RAW 10 */
 	TEGRA_VIDEO_FORMAT(RAW10, 10, SRGGB10_1X10, 2, 1, T_R16,
 				RAW10, SRGGB10, "RGRG.. GBGB.."),
@@ -129,7 +118,7 @@ static const struct tegra_video_format vi5_video_formats[] = {
 
 	/* RGB888 */
 	TEGRA_VIDEO_FORMAT(RGB888, 24, RGB888_1X24, 4, 1, T_A8R8G8B8,
-				RGB888, RGBA32, "RGBA-8-8-8-8"),
+				RGB888, ABGR32, "BGRA-8-8-8-8"),
 	TEGRA_VIDEO_FORMAT(RGB888, 24, RGB888_1X32_PADHI, 4, 1, T_A8B8G8R8,
 				RGB888, RGB32, "RGB-8-8-8-8"),
 

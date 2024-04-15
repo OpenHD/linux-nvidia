@@ -1,7 +1,7 @@
 /**
  * TEGRA_V4L2_CAMERA.h - utilities for tegra camera driver
  *
- * Copyright (c) 2017-2023, NVIDIA Corporation.  All rights reserved.
+ * Copyright (c) 2017-2020, NVIDIA Corporation.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -38,14 +38,10 @@
 #define TEGRA_CAMERA_CID_FRAME_RATE		(TEGRA_CAMERA_CID_BASE+11)
 #define TEGRA_CAMERA_CID_EXPOSURE_SHORT		(TEGRA_CAMERA_CID_BASE+12)
 #define TEGRA_CAMERA_CID_STEREO_EEPROM		(TEGRA_CAMERA_CID_BASE+13)
-#define TEGRA_CAMERA_CID_ALTERNATING_EXPOSURE	(TEGRA_CAMERA_CID_BASE+14)
 
 #define TEGRA_CAMERA_CID_SENSOR_CONFIG		(TEGRA_CAMERA_CID_BASE+50)
 #define TEGRA_CAMERA_CID_SENSOR_MODE_BLOB	(TEGRA_CAMERA_CID_BASE+51)
 #define TEGRA_CAMERA_CID_SENSOR_CONTROL_BLOB	(TEGRA_CAMERA_CID_BASE+52)
-
-#define TEGRA_CAMERA_CID_GAIN_TPG		(TEGRA_CAMERA_CID_BASE+70)
-#define TEGRA_CAMERA_CID_GAIN_TPG_EMB_DATA_CFG	(TEGRA_CAMERA_CID_BASE+71)
 
 #define TEGRA_CAMERA_CID_VI_BYPASS_MODE		(TEGRA_CAMERA_CID_BASE+100)
 #define TEGRA_CAMERA_CID_OVERRIDE_ENABLE	(TEGRA_CAMERA_CID_BASE+101)
@@ -86,7 +82,6 @@
 
 #define TEGRA_CAM_MAX_COMPOUND_CONTROLS 4
 #define TEGRA_CAM_COMPOUND_CTRL_EEPROM_INDEX 0
-#define TEGRA_CAM_COMPOUND_CTRL_ALT_EXP_INDEX 1
 
 #define	CSI_PHY_MODE_DPHY	0
 #define	CSI_PHY_MODE_CPHY	1
@@ -108,7 +103,6 @@ struct sensor_signal_properties {
 	__u32 mclk_freq;
 	union __u64val pixel_clock;
 	__u32 cil_settletime;
-	__u32 lane_polarity;
 	__u32 discontinuous_clk;
 	__u32 dpcm_enable;
 	__u32 tegra_sinterface;
@@ -116,7 +110,7 @@ struct sensor_signal_properties {
 	__u32 deskew_initial_enable;
 	__u32 deskew_periodic_enable;
 	union __u64val serdes_pixel_clock;
-	union __u64val mipi_clock;
+	__u32 reserved[2];
 };
 
 struct sensor_image_properties {
@@ -185,15 +179,4 @@ struct sensor_mode_properties {
 	(sizeof(struct sensor_blob) / sizeof(__u32))
 #define SENSOR_CTRL_BLOB_SIZE \
 	(sizeof(struct sensor_blob) / sizeof(__u32))
-
-struct alternating_exposure_cfg {
-	__u8 enable;
-	__s64 exp_time_0;
-	__s64 exp_time_1;
-	__s64 analog_gain_0;
-	__s64 analog_gain_1;
-};
-
-#define ALTERNATING_EXPOSURE_CID_SIZE \
-	sizeof(struct alternating_exposure_cfg)
 #endif /* __TEGRA_V4L2_CAMERA__ */

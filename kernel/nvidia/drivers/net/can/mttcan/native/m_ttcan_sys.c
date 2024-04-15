@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2022, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2015-2020, NVIDIA CORPORATION. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -28,20 +28,10 @@ static ssize_t show_std_fltr(struct device *dev,
 	int i = 0;
 
 	ret = sprintf(buf, "%s\n", "Standard Filters");
-	if (ret < 0) {
-		pr_err("sprintf() failed at line %d\n", __LINE__);
-		return -ENOMEM;
-	}
-
 	total += ret;
 	while (cur_filter_size--) {
 		ret = sprintf(buf+total, "%d. 0x%x\n", i,
 			ttcan_get_std_id_filter(priv->ttcan, i));
-		if (ret < 0) {
-			pr_err("sprintf() failed at line %d\n", __LINE__);
-			return -ENOMEM;
-		}
-
 		total += ret;
 		i++;
 	}
@@ -57,20 +47,10 @@ static ssize_t show_xtd_fltr(struct device *dev,
 	int i = 0;
 
 	ret = sprintf(buf, "%s\n", "Extended Filters");
-	if (ret < 0) {
-		pr_err("sprintf() failed at line %d\n", __LINE__);
-		return -ENOMEM;
-	}
-
 	total += ret;
 	while (cur_filter_size--) {
 		ret = sprintf(buf+total, "%d. 0x%llx\n", i,
 			ttcan_get_xtd_id_filter(priv->ttcan, i));
-		if (ret < 0) {
-			pr_err("sprintf() failed at line %d\n", __LINE__);
-			return -ENOMEM;
-		}
-
 		total += ret;
 		i++;
 	}
@@ -254,14 +234,14 @@ static ssize_t store_std_fltr(struct device *dev,
 		}
 
 		/* array access based on user provided index/data */
-		spec_bar();
+		speculation_barrier();
 		ttcan_set_std_id_filter(priv->ttcan, priv->std_shadow,
 			idx, (u8)sft, (u8)sfec, sfid1, sfid2);
 		if (idx == cur_filter_size)
 			priv->ttcan->fltr_config.std_fltr_size++;
 	} else {
 		/* array access based on user provided index/data */
-		spec_bar();
+		speculation_barrier();
 		ttcan_set_std_id_filter(priv->ttcan, priv->std_shadow,
 			cur_filter_size, (u8) sft, (u8)sfec, sfid1, sfid2);
 			priv->ttcan->fltr_config.std_fltr_size++;
@@ -319,14 +299,14 @@ static ssize_t store_xtd_fltr(struct device *dev,
 		}
 
 		/* array access based on user provided index/data */
-		spec_bar();
+		speculation_barrier();
 		ttcan_set_xtd_id_filter(priv->ttcan, priv->xtd_shadow,
 			idx, (u8) eft, (u8) efec, efid1, efid2);
 		if (idx == cur_filter_size)
 			priv->ttcan->fltr_config.xtd_fltr_size++;
 	} else {
 		/* array access based on user provided index/data */
-		spec_bar();
+		speculation_barrier();
 		ttcan_set_xtd_id_filter(priv->ttcan, priv->xtd_shadow,
 			cur_filter_size, (u8) eft, (u8) efec, efid1, efid2);
 		priv->ttcan->fltr_config.xtd_fltr_size++;
@@ -585,20 +565,10 @@ static ssize_t show_trigger_mem(struct device *dev,
 	int i = 0;
 
 	ret = sprintf(buf, "%s\n", "Trigger Memory Elements");
-	if (ret < 0) {
-		pr_err("sprintf() failed at line %d\n", __LINE__);
-		return -ENOMEM;
-	}
-
 	total += ret;
 	while (cur--) {
 		ret = sprintf(buf+total, "%d. 0x%llx\n", i,
 			ttcan_get_trigger_mem(priv->ttcan, i));
-		if (ret < 0) {
-			pr_err("sprintf() failed at line %d\n", __LINE__);
-			return -ENOMEM;
-		}
-
 		total += ret;
 		i++;
 	}
@@ -648,7 +618,7 @@ static ssize_t store_trigger_mem(struct device *dev,
 		}
 
 		/* array access based on user provided index/data */
-		spec_bar();
+		speculation_barrier();
 		ttcan_set_trigger_mem(priv->ttcan, priv->tmc_shadow, idx, tm,
 			cc, tmin, tmex, type, ftype, mnr);
 
@@ -656,7 +626,7 @@ static ssize_t store_trigger_mem(struct device *dev,
 			priv->ttcan->tt_mem_elements++;
 	} else {
 		/* array access based on user provided index/data */
-		spec_bar();
+		speculation_barrier();
 		ttcan_set_trigger_mem(priv->ttcan,  priv->tmc_shadow, cur, tm,
 			cc, tmin, tmex, type, ftype, mnr);
 		priv->ttcan->tt_mem_elements++;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2020, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -20,15 +20,17 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include <pthread.h>
-#include <nvgpu/rwsem.h>
-#include <nvgpu/log.h>
 #include <nvgpu/bug.h>
+#include <nvgpu/rwsem.h>
+#include <nvgpu/timers.h>
+
+#include <nvgpu/posix/rwsem.h>
 
 void nvgpu_rwsem_init(struct nvgpu_rwsem *rwsem)
 {
-	int err = pthread_rwlock_init(&rwsem->rw_sem, NULL);
-	nvgpu_assert(err == 0);
+	memset(rwsem, 0, sizeof(*rwsem));
+
+	nvgpu_spinlock_init(&rwsem->lock);
 }
 
 /*
@@ -36,8 +38,25 @@ void nvgpu_rwsem_init(struct nvgpu_rwsem *rwsem)
  */
 void nvgpu_rwsem_down_read(struct nvgpu_rwsem *rwsem)
 {
-	int err = pthread_rwlock_rdlock(&rwsem->rw_sem);
-	nvgpu_assert(err == 0);
+	while (true) {
+		nvgpu_spinlock_acquire(&rwsem->lock);
+
+		/*
+		 * If there's a writer try again.
+		 */
+		if (rwsem->writers < 0) {
+			nvgpu_spinlock_release(&rwsem->lock);
+			nvgpu_msleep(10);
+			continue;
+		}
+
+		/*
+		 * Otherwise decrement the read counter and return.
+		 */
+		rwsem->readers -= 1;
+		nvgpu_spinlock_release(&rwsem->lock);
+		return;
+	}
 }
 
 /*
@@ -45,18 +64,54 @@ void nvgpu_rwsem_down_read(struct nvgpu_rwsem *rwsem)
  */
 void nvgpu_rwsem_up_read(struct nvgpu_rwsem *rwsem)
 {
-	int err = pthread_rwlock_unlock(&rwsem->rw_sem);
-	nvgpu_assert(err == 0);
+	nvgpu_spinlock_acquire(&rwsem->lock);
+	rwsem->readers += 1;
+
+	/*
+	 * Can't be any writers if there was a reader. Also can't be
+	 * a positive number of readers. The increments are always
+	 * downward so if we have a positive number then there is a
+	 * balancing bug.
+	 */
+	BUG_ON(rwsem->writers < 0);
+	BUG_ON(rwsem->readers > 0);
+
+	nvgpu_spinlock_release(&rwsem->lock);
 }
 
 void nvgpu_rwsem_down_write(struct nvgpu_rwsem *rwsem)
 {
-	int err = pthread_rwlock_wrlock(&rwsem->rw_sem);
-	nvgpu_assert(err == 0);
+	while (true) {
+		nvgpu_spinlock_acquire(&rwsem->lock);
+
+		/*
+		 * If there's a reader or a writer try again. Note: in this very
+		 * simple implementation it's possible for readers to
+		 * indefinitely starve writers.
+		 */
+		if (rwsem->writers < 0 || rwsem->readers < 0) {
+			nvgpu_spinlock_release(&rwsem->lock);
+			nvgpu_msleep(10);
+			continue;
+		}
+
+		rwsem->writers -= 1;
+		nvgpu_spinlock_release(&rwsem->lock);
+		return;
+	}
 }
 
 void nvgpu_rwsem_up_write(struct nvgpu_rwsem *rwsem)
 {
-	int err = pthread_rwlock_unlock(&rwsem->rw_sem);
-	nvgpu_assert(err == 0);
+	nvgpu_spinlock_acquire(&rwsem->lock);
+	rwsem->writers += 1;
+
+	/*
+	 * Writers can't be positive: that would be an unbalanced free. Readers
+	 * must be zero - otherwise this writer should never have had access!
+	 */
+	BUG_ON(rwsem->writers > 0);
+	BUG_ON(rwsem->readers != 0);
+
+	nvgpu_spinlock_release(&rwsem->lock);
 }

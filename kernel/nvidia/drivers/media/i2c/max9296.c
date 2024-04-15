@@ -1,7 +1,7 @@
 /*
  * max9296.c - max9296 GMSL Deserializer driver
  *
- * Copyright (c) 2018-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2018-2020, NVIDIA CORPORATION.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -147,10 +147,10 @@ static int max9296_write_reg(struct device *dev,
 }
 
 static int max9296_get_sdev_idx(struct device *dev,
-			struct device *s_dev, unsigned int *idx)
+			struct device *s_dev, int *idx)
 {
 	struct max9296 *priv = dev_get_drvdata(dev);
-	unsigned int i;
+	int i;
 	int err = 0;
 
 	mutex_lock(&priv->lock);
@@ -199,7 +199,7 @@ static void max9296_pipes_reset(struct max9296 *priv)
 
 static void max9296_reset_ctx(struct max9296 *priv)
 {
-	unsigned int i;
+	int i;
 
 	priv->link_setup = false;
 	priv->lane_setup = false;
@@ -219,7 +219,7 @@ int max9296_power_on(struct device *dev)
 	mutex_lock(&priv->lock);
 	if (priv->pw_ref == 0) {
 		usleep_range(1, 2);
-		if (gpio_is_valid(priv->reset_gpio))
+		if (priv->reset_gpio)
 			gpio_set_value(priv->reset_gpio, 0);
 
 		usleep_range(30, 50);
@@ -233,7 +233,7 @@ int max9296_power_on(struct device *dev)
 		usleep_range(30, 50);
 
 		/*exit reset mode: XCLR */
-		if (gpio_is_valid(priv->reset_gpio)) {
+		if (priv->reset_gpio) {
 			gpio_set_value(priv->reset_gpio, 0);
 			usleep_range(30, 50);
 			gpio_set_value(priv->reset_gpio, 1);
@@ -263,7 +263,7 @@ void max9296_power_off(struct device *dev)
 	if (priv->pw_ref == 0) {
 		/* enter reset mode: XCLR */
 		usleep_range(1, 2);
-		if (gpio_is_valid(priv->reset_gpio))
+		if (priv->reset_gpio)
 			gpio_set_value(priv->reset_gpio, 0);
 
 		if (priv->vdd_cam_1v2)
@@ -297,7 +297,7 @@ int max9296_setup_link(struct device *dev, struct device *s_dev)
 {
 	struct max9296 *priv = dev_get_drvdata(dev);
 	int err = 0;
-	unsigned int i = 0;
+	int i;
 
 	err = max9296_get_sdev_idx(dev, s_dev, &i);
 	if (err)
@@ -325,7 +325,7 @@ int max9296_setup_control(struct device *dev, struct device *s_dev)
 {
 	struct max9296 *priv = dev_get_drvdata(dev);
 	int err = 0;
-	unsigned int i = 0;
+	int i;
 
 	err = max9296_get_sdev_idx(dev, s_dev, &i);
 	if (err)
@@ -410,7 +410,7 @@ EXPORT_SYMBOL(max9296_reset_control);
 int max9296_sdev_register(struct device *dev, struct gmsl_link_ctx *g_ctx)
 {
 	struct max9296 *priv = NULL;
-	unsigned int i;
+	int i;
 	int err = 0;
 
 	if (!dev || !g_ctx || !g_ctx->s_dev) {
@@ -480,7 +480,7 @@ int max9296_sdev_unregister(struct device *dev, struct device *s_dev)
 {
 	struct max9296 *priv = NULL;
 	int err = 0;
-	unsigned int i = 0;
+	int i = 0;
 
 	if (!dev || !s_dev) {
 		dev_err(dev, "%s: invalid input params\n", __func__);
@@ -656,7 +656,7 @@ int max9296_start_streaming(struct device *dev, struct device *s_dev)
 	struct gmsl_link_ctx *g_ctx;
 	struct gmsl_stream *g_stream;
 	int err = 0;
-	unsigned int i = 0;
+	int i = 0;
 
 	err = max9296_get_sdev_idx(dev, s_dev, &i);
 	if (err)
@@ -684,7 +684,7 @@ int max9296_stop_streaming(struct device *dev, struct device *s_dev)
 	struct gmsl_link_ctx *g_ctx;
 	struct gmsl_stream *g_stream;
 	int err = 0;
-	unsigned int i = 0;
+	int i = 0;
 
 	err = max9296_get_sdev_idx(dev, s_dev, &i);
 	if (err)
@@ -712,7 +712,7 @@ int max9296_setup_streaming(struct device *dev, struct device *s_dev)
 	struct max9296 *priv = dev_get_drvdata(dev);
 	struct gmsl_link_ctx *g_ctx;
 	int err = 0;
-	unsigned int i = 0;
+	int i = 0;
 	u16 lane_ctrl_addr;
 
 	err = max9296_get_sdev_idx(dev, s_dev, &i);
@@ -780,8 +780,8 @@ ret:
 }
 EXPORT_SYMBOL(max9296_setup_streaming);
 
-static const struct of_device_id max9296_of_match[] = {
-	{ .compatible = "maxim,max9296", },
+const struct of_device_id max9296_of_match[] = {
+	{ .compatible = "nvidia,max9296", },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, max9296_of_match);

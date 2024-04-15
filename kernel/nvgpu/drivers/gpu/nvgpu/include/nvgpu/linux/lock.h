@@ -30,9 +30,10 @@ struct nvgpu_raw_spinlock {
 	raw_spinlock_t spinlock;
 };
 
-static inline void nvgpu_mutex_init(struct nvgpu_mutex *mutex)
+static inline int nvgpu_mutex_init(struct nvgpu_mutex *mutex)
 {
 	mutex_init(&mutex->mutex);
+	return 0;
 };
 static inline void nvgpu_mutex_acquire(struct nvgpu_mutex *mutex)
 {
@@ -63,12 +64,6 @@ static inline void nvgpu_spinlock_release(struct nvgpu_spinlock *spinlock)
 {
 	spin_unlock(&spinlock->spinlock);
 };
-
-#define nvgpu_spinlock_irqsave(lock, flags) \
-		spin_lock_irqsave(lock.spinlock, flags)
-
-#define nvgpu_spinunlock_irqrestore(lock, flags) \
-		spin_unlock_irqrestore(lock.spinlock, flags)
 
 static inline void nvgpu_raw_spinlock_init(struct nvgpu_raw_spinlock *spinlock)
 {

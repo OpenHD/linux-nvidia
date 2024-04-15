@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2019, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -21,11 +21,8 @@
  */
 
 #include <nvgpu/tsg.h>
-#include <nvgpu/gk20a.h>
 
-#ifdef CONFIG_NVGPU_CHANNEL_TSG_CONTROL
-void nvgpu_tsg_post_event_id(struct nvgpu_tsg *tsg,
-			     enum nvgpu_event_id_type event_id)
+void gk20a_tsg_event_id_post_event(struct tsg_gk20a *tsg,
+				       int __event_id)
 {
 }
-#endif

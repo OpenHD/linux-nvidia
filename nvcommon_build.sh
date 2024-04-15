@@ -1,14 +1,7 @@
-# SPDX-FileCopyrightText: Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-#
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
-
 # shellcheck disable=SC2148
+#
+# Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
+#
 
 # Function to check if variable is defined.
 function check_vars {
@@ -26,7 +19,7 @@ function check_vars {
 function check_env_common {
 	if [ "${IS_CROSS_COMPILATION}" -eq 1 ]; then
 		check_vars "CROSS_COMPILE_AARCH64_PATH"
-		CROSS_COMPILE_AARCH64="${CROSS_COMPILE_AARCH64:-${CROSS_COMPILE_AARCH64_PATH}/bin/aarch64-buildroot-linux-gnu-}"
+		CROSS_COMPILE_AARCH64="${CROSS_COMPILE_AARCH64_PATH}/bin/aarch64-linux-gnu-"
 		if [ ! -f "${CROSS_COMPILE_AARCH64}gcc" ]; then
 			echo "Error: Path ${CROSS_COMPILE_AARCH64}gcc does not exist."
 			exit 1

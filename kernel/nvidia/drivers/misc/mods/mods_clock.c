@@ -1,8 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
- * This file is part of NVIDIA MODS kernel driver.
+ * mods_clock.c - This file is part of NVIDIA MODS kernel driver.
  *
- * Copyright (c) 2011-2022, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2017, NVIDIA CORPORATION.  All rights reserved.
  *
  * NVIDIA MODS kernel driver is free software: you can redistribute it and/or
  * modify it under the terms of the GNU General Public License,
@@ -38,19 +37,6 @@ struct clock_entry {
 	struct list_head list;
 };
 
-static LIST_HEAD(reset_handles);
-
-struct reset_data {
-	char name[MAX_DT_SIZE];
-	struct reset_control *rst;
-};
-
-struct reset_entry {
-	struct list_head list;
-	struct reset_data rst_data;
-	u32 handle;
-};
-
 static struct device_node *find_clocks_node(const char *name)
 {
 	const char *node_name = "mods-simple-bus";
@@ -70,8 +56,8 @@ static struct device_node *find_clocks_node(const char *name)
 void mods_init_clock_api(void)
 {
 	const char *okay_value = "okay";
-	struct device_node *mods_np = NULL;
-	struct property *pp = NULL;
+	struct device_node *mods_np = 0;
+	struct property *pp = 0;
 	int size_value = 0;
 
 	mods_np = find_clocks_node("mods-clocks");
@@ -92,10 +78,6 @@ void mods_init_clock_api(void)
 
 	size_value = strlen(okay_value) + 1;
 	pp->value = kmalloc(size_value, GFP_KERNEL);
-	if (unlikely(!pp->value)) {
-		pp->length = 0;
-		goto err;
-	}
 	strncpy(pp->value, okay_value, size_value);
 	pp->length = size_value;
 
@@ -109,23 +91,15 @@ err:
 
 void mods_shutdown_clock_api(void)
 {
-	struct list_head   *head       = &mods_clock_handles;
-	struct list_head   *reset_head = &reset_handles;
-	struct reset_entry *entry      = NULL;
-	struct list_head   *iter       = NULL;
-	struct list_head   *tmp        = NULL;
+	struct list_head *head = &mods_clock_handles;
+	struct list_head *iter;
+	struct list_head *tmp;
 
 	spin_lock(&mods_clock_lock);
 
 	list_for_each_safe(iter, tmp, head) {
 		struct clock_entry *entry
 			= list_entry(iter, struct clock_entry, list);
-		list_del(iter);
-		kfree(entry);
-	}
-
-	list_for_each_safe(iter, tmp, reset_head) {
-		entry = list_entry(iter, struct reset_entry, list);
 		list_del(iter);
 		kfree(entry);
 	}
@@ -137,7 +111,7 @@ static u32 mods_get_clock_handle(struct clk *pclk)
 {
 	struct list_head *head = &mods_clock_handles;
 	struct list_head *iter;
-	struct clock_entry *entry = NULL;
+	struct clock_entry *entry = 0;
 	u32 handle = 0;
 
 	spin_lock(&mods_clock_lock);
@@ -170,8 +144,8 @@ static u32 mods_get_clock_handle(struct clk *pclk)
 static struct clk *mods_get_clock(u32 handle)
 {
 	struct list_head *head = &mods_clock_handles;
-	struct list_head *iter = NULL;
-	struct clk *pclk = NULL;
+	struct list_head *iter;
+	struct clk *pclk = 0;
 
 	spin_lock(&mods_clock_lock);
 
@@ -189,80 +163,25 @@ static struct clk *mods_get_clock(u32 handle)
 	return pclk;
 }
 
-static struct reset_data find_reset_data(u32 handle)
-{
-	struct list_head   *entry     = NULL;
-	struct reset_entry *rst_entry = NULL;
-	struct reset_data  reset_data = {"", NULL};
-
-	spin_lock(&mods_clock_lock);
-
-	list_for_each(entry, &reset_handles) {
-		rst_entry = list_entry(entry, struct reset_entry, list);
-		if (handle == rst_entry->handle) {
-			reset_data = rst_entry->rst_data;
-			break;
-		}
-	}
-
-	spin_unlock(&mods_clock_lock);
-
-	return reset_data;
-}
-
-static int get_reset_handle(struct reset_data reset_data)
-{
-	int    handle                 = -1;
-	struct list_head *entry       = NULL;
-	struct reset_entry *rst_entry = NULL;
-
-	spin_lock(&mods_clock_lock);
-
-	/* If entry has no rst structure, we are past last cached entry */
-	list_for_each(entry, &reset_handles) {
-		rst_entry = list_entry(entry, struct reset_entry, list);
-		handle = rst_entry->handle;
-		if (strcmp(rst_entry->rst_data.name,
-			   reset_data.name) == 0) {
-			goto failed;
-		}
-	}
-
-	/* If reset not already in array, then we must add it */
-	rst_entry = kzalloc(sizeof(struct reset_entry), GFP_ATOMIC);
-	if (unlikely(!rst_entry)) {
-		handle = -1;
-		goto failed;
-	}
-	rst_entry->handle = ++handle;
-	rst_entry->rst_data = reset_data;
-	INIT_LIST_HEAD(&rst_entry->list);
-	list_add_tail(&rst_entry->list, &reset_handles);
-
-failed:
-	spin_unlock(&mods_clock_lock);
-	return handle;
-}
-
-int esc_mods_get_clock_handle(struct mods_client *client,
+int esc_mods_get_clock_handle(struct file *pfile,
 			      struct MODS_GET_CLOCK_HANDLE *p)
 {
-	struct clk *pclk = NULL;
+	struct clk *pclk = 0;
 	int ret = -EINVAL;
 
-	struct device_node *mods_np = NULL;
-	struct property *pp = NULL;
+	struct device_node *mods_np = 0;
+	struct property *pp = 0;
 
 	LOG_ENT();
 
 	mods_np = find_clocks_node("mods-clocks");
 	if (!mods_np || !of_device_is_available(mods_np)) {
-		cl_error("'mods-clocks' node not found in device tree\n");
+		mods_error_printk("'mods-clocks' node not found in device tree\n");
 		goto err;
 	}
 	pp = of_find_property(mods_np, "clock-names", NULL);
 	if (IS_ERR(pp)) {
-		cl_error(
+		mods_error_printk(
 		    "No 'clock-names' prop in 'mods-clocks' node for dev %s\n",
 				  p->controller_name);
 		goto err;
@@ -271,7 +190,7 @@ int esc_mods_get_clock_handle(struct mods_client *client,
 	pclk = of_clk_get_by_name(mods_np, p->controller_name);
 
 	if (IS_ERR(pclk))
-		cl_error("clk (%s) not found\n", p->controller_name);
+		mods_error_printk("clk (%s) not found\n", p->controller_name);
 	else {
 		p->clock_handle = mods_get_clock_handle(pclk);
 		ret = OK;
@@ -282,62 +201,9 @@ err:
 	return ret;
 }
 
-int esc_mods_get_rst_handle(struct mods_client *client,
-			    struct MODS_GET_RESET_HANDLE *p)
+int esc_mods_set_clock_rate(struct file *pfile, struct MODS_CLOCK_RATE *p)
 {
-	struct reset_data reset_data = {{0}, NULL};
-	struct reset_control *p_reset_ctrl = NULL;
-	int ret = -EINVAL;
-
-	struct device_node *mods_np = NULL;
-	struct property *pp = NULL;
-
-	LOG_ENT();
-
-	mods_np = find_clocks_node("mods-clocks");
-	if (!mods_np || !of_device_is_available(mods_np)) {
-		cl_error("'mods-clocks' node not found in device tree\n");
-		goto err;
-	}
-	pp = of_find_property(mods_np, "reset-names", NULL);
-	if (IS_ERR(pp)) {
-		cl_error(
-		"No 'reset-names' prop in 'mods-clocks' node for dev %s\n",
-			p->reset_name);
-		goto err;
-	}
-
-	p_reset_ctrl = of_reset_control_get(mods_np, p->reset_name);
-
-	if (IS_ERR(p_reset_ctrl))
-		cl_error("reset (%s) not found\n", p->reset_name);
-	else {
-		strncpy(reset_data.name, p->reset_name,
-			sizeof(reset_data.name) - 1);
-		if (reset_data.name[sizeof(reset_data.name) - 1] != '\0') {
-			cl_error(
-			"reset name %sis too large to store in reset array\n",
-			reset_data.name);
-			goto err;
-		}
-		reset_data.rst = p_reset_ctrl;
-		p->reset_handle = get_reset_handle(reset_data);
-		if (p->reset_handle == -1) {
-			cl_error("no valid reset handle was acquired");
-			goto err;
-		}
-		ret = OK;
-	}
-err:
-	of_node_put(mods_np);
-	LOG_EXT();
-	return ret;
-}
-
-int esc_mods_set_clock_rate(struct mods_client *client,
-			    struct MODS_CLOCK_RATE *p)
-{
-	struct clk *pclk = NULL;
+	struct clk *pclk = 0;
 	int ret = -EINVAL;
 
 	LOG_ENT();
@@ -345,18 +211,18 @@ int esc_mods_set_clock_rate(struct mods_client *client,
 	pclk = mods_get_clock(p->clock_handle);
 
 	if (!pclk) {
-		cl_error("unrecognized clock handle: 0x%x\n",
+		mods_error_printk("unrecognized clock handle: 0x%x\n",
 				  p->clock_handle);
 	} else {
 		ret = clk_set_rate(pclk, p->clock_rate_hz);
 		if (ret) {
-			cl_error(
+			mods_error_printk(
 				"unable to set rate %lluHz on clock 0x%x\n",
 				p->clock_rate_hz, p->clock_handle);
 		} else {
-			cl_debug(DEBUG_CLOCK,
-				 "successfuly set rate %lluHz on clock 0x%x\n",
-				 p->clock_rate_hz, p->clock_handle);
+			mods_debug_printk(DEBUG_CLOCK,
+				  "successfuly set rate %lluHz on clock 0x%x\n",
+				  p->clock_rate_hz, p->clock_handle);
 		}
 	}
 
@@ -364,10 +230,9 @@ int esc_mods_set_clock_rate(struct mods_client *client,
 	return ret;
 }
 
-int esc_mods_get_clock_rate(struct mods_client *client,
-			    struct MODS_CLOCK_RATE *p)
+int esc_mods_get_clock_rate(struct file *pfile, struct MODS_CLOCK_RATE *p)
 {
-	struct clk *pclk = NULL;
+	struct clk *pclk = 0;
 	int ret = -EINVAL;
 
 	LOG_ENT();
@@ -375,12 +240,12 @@ int esc_mods_get_clock_rate(struct mods_client *client,
 	pclk = mods_get_clock(p->clock_handle);
 
 	if (!pclk) {
-		cl_error("unrecognized clock handle: 0x%x\n",
+		mods_error_printk("unrecognized clock handle: 0x%x\n",
 				  p->clock_handle);
 	} else {
 		p->clock_rate_hz = clk_get_rate(pclk);
-		cl_debug(DEBUG_CLOCK, "clock 0x%x has rate %lluHz\n",
-			 p->clock_handle, p->clock_rate_hz);
+		mods_debug_printk(DEBUG_CLOCK, "clock 0x%x has rate %lluHz\n",
+				  p->clock_handle, p->clock_rate_hz);
 		ret = OK;
 	}
 
@@ -388,25 +253,25 @@ int esc_mods_get_clock_rate(struct mods_client *client,
 	return ret;
 }
 
-int esc_mods_get_clock_max_rate(struct mods_client *client,
-				struct MODS_CLOCK_RATE *p)
+int esc_mods_get_clock_max_rate(struct file *pfile, struct MODS_CLOCK_RATE *p)
 {
-	struct clk *pclk = NULL;
+	struct clk *pclk = 0;
 	int ret = -EINVAL;
 
 	LOG_ENT();
 	pclk = mods_get_clock(p->clock_handle);
 
 	if (!pclk) {
-		cl_error("unrecognized clock handle: 0x%x\n", p->clock_handle);
+		mods_error_printk("unrecognized clock handle: 0x%x\n",
+				  p->clock_handle);
 	} else {
 		long rate = clk_round_rate(pclk, ARBITRARY_MAX_CLK_FREQ);
 
 		p->clock_rate_hz = rate < 0 ? ARBITRARY_MAX_CLK_FREQ
 			: (unsigned long)rate;
-		cl_debug(DEBUG_CLOCK,
-			 "clock 0x%x has max rate %lluHz\n",
-			 p->clock_handle, p->clock_rate_hz);
+		mods_debug_printk(DEBUG_CLOCK,
+				  "clock 0x%x has max rate %lluHz\n",
+				  p->clock_handle, p->clock_rate_hz);
 		ret = OK;
 	}
 
@@ -414,10 +279,9 @@ int esc_mods_get_clock_max_rate(struct mods_client *client,
 	return ret;
 }
 
-int esc_mods_set_clock_max_rate(struct mods_client *client,
-				struct MODS_CLOCK_RATE *p)
+int esc_mods_set_clock_max_rate(struct file *pfile, struct MODS_CLOCK_RATE *p)
 {
-	struct clk *pclk = NULL;
+	struct clk *pclk = 0;
 	int ret = -EINVAL;
 
 	LOG_ENT();
@@ -425,23 +289,24 @@ int esc_mods_set_clock_max_rate(struct mods_client *client,
 	pclk = mods_get_clock(p->clock_handle);
 
 	if (!pclk) {
-		cl_error("unrecognized clock handle: 0x%x\n", p->clock_handle);
+		mods_error_printk("unrecognized clock handle: 0x%x\n",
+				  p->clock_handle);
 	} else {
 #if defined(CONFIG_TEGRA_CLOCK_DEBUG_FUNC)
 		ret = tegra_clk_set_max(pclk, p->clock_rate_hz);
 		if (ret) {
-			cl_error(
-				"unable to override max clock rate %lluHz on clock 0x%x\n",
-				p->clock_rate_hz, p->clock_handle);
+			mods_error_printk(
+		"unable to override max clock rate %lluHz on clock 0x%x\n",
+					  p->clock_rate_hz, p->clock_handle);
 		} else {
-			cl_debug(DEBUG_CLOCK,
-				 "successfuly set max rate %lluHz on clock 0x%x\n",
-				 p->clock_rate_hz, p->clock_handle);
+			mods_debug_printk(DEBUG_CLOCK,
+			  "successfuly set max rate %lluHz on clock 0x%x\n",
+					  p->clock_rate_hz, p->clock_handle);
 		}
 #else
-		cl_error("unable to override max clock rate\n");
-		cl_error(
-			"reconfigure kernel with CONFIG_TEGRA_CLOCK_DEBUG_FUNC=y\n");
+		mods_error_printk("unable to override max clock rate\n");
+		mods_error_printk(
+		"reconfigure kernel with CONFIG_TEGRA_CLOCK_DEBUG_FUNC=y\n");
 		ret = -EINVAL;
 #endif
 	}
@@ -450,11 +315,10 @@ int esc_mods_set_clock_max_rate(struct mods_client *client,
 	return ret;
 }
 
-int esc_mods_set_clock_parent(struct mods_client *client,
-			      struct MODS_CLOCK_PARENT *p)
+int esc_mods_set_clock_parent(struct file *pfile, struct MODS_CLOCK_PARENT *p)
 {
-	struct clk *pclk = NULL;
-	struct clk *pparent = NULL;
+	struct clk *pclk = 0;
+	struct clk *pparent = 0;
 	int ret = -EINVAL;
 
 	LOG_ENT();
@@ -463,20 +327,21 @@ int esc_mods_set_clock_parent(struct mods_client *client,
 	pparent = mods_get_clock(p->clock_parent_handle);
 
 	if (!pclk) {
-		cl_error("unrecognized clock handle: 0x%x\n", p->clock_handle);
+		mods_error_printk("unrecognized clock handle: 0x%x\n",
+				  p->clock_handle);
 	} else if (!pparent) {
-		cl_error("unrecognized parent clock handle: 0x%x\n",
-			 p->clock_parent_handle);
+		mods_error_printk("unrecognized parent clock handle: 0x%x\n",
+				  p->clock_parent_handle);
 	} else {
 		ret = clk_set_parent(pclk, pparent);
 		if (ret) {
-			cl_error(
-				"unable to make clock 0x%x parent of clock 0x%x\n",
-				p->clock_parent_handle, p->clock_handle);
+			mods_error_printk(
+			    "unable to make clock 0x%x parent of clock 0x%x\n",
+			    p->clock_parent_handle, p->clock_handle);
 		} else {
-			cl_debug(DEBUG_CLOCK,
-				 "successfuly made clock 0x%x parent of clock 0x%x\n",
-				 p->clock_parent_handle, p->clock_handle);
+			mods_debug_printk(DEBUG_CLOCK,
+			  "successfuly made clock 0x%x parent of clock 0x%x\n",
+			  p->clock_parent_handle, p->clock_handle);
 		}
 	}
 
@@ -484,10 +349,9 @@ int esc_mods_set_clock_parent(struct mods_client *client,
 	return ret;
 }
 
-int esc_mods_get_clock_parent(struct mods_client *client,
-			      struct MODS_CLOCK_PARENT *p)
+int esc_mods_get_clock_parent(struct file *pfile, struct MODS_CLOCK_PARENT *p)
 {
-	struct clk *pclk = NULL;
+	struct clk *pclk = 0;
 	int ret = -EINVAL;
 
 	LOG_ENT();
@@ -495,14 +359,15 @@ int esc_mods_get_clock_parent(struct mods_client *client,
 	pclk = mods_get_clock(p->clock_handle);
 
 	if (!pclk) {
-		cl_error("unrecognized clock handle: 0x%x\n", p->clock_handle);
+		mods_error_printk("unrecognized clock handle: 0x%x\n",
+				  p->clock_handle);
 	} else {
 		struct clk *pparent = clk_get_parent(pclk);
 
 		p->clock_parent_handle = mods_get_clock_handle(pparent);
-		cl_debug(DEBUG_CLOCK,
-			 "clock 0x%x is parent of clock 0x%x\n",
-			 p->clock_parent_handle, p->clock_handle);
+		mods_debug_printk(DEBUG_CLOCK,
+				  "clock 0x%x is parent of clock 0x%x\n",
+				  p->clock_parent_handle, p->clock_handle);
 		ret = OK;
 	}
 
@@ -510,10 +375,9 @@ int esc_mods_get_clock_parent(struct mods_client *client,
 	return ret;
 }
 
-int esc_mods_enable_clock(struct mods_client *client,
-			  struct MODS_CLOCK_HANDLE *p)
+int esc_mods_enable_clock(struct file *pfile, struct MODS_CLOCK_HANDLE *p)
 {
-	struct clk *pclk = NULL;
+	struct clk *pclk = 0;
 	int ret = -EINVAL;
 
 	LOG_ENT();
@@ -521,21 +385,22 @@ int esc_mods_enable_clock(struct mods_client *client,
 	pclk = mods_get_clock(p->clock_handle);
 
 	if (!pclk) {
-		cl_error("unrecognized clock handle: 0x%x\n", p->clock_handle);
+		mods_error_printk("unrecognized clock handle: 0x%x\n",
+				  p->clock_handle);
 	} else {
 		ret = clk_prepare(pclk);
 		if (ret) {
-			cl_error(
-				"unable to prepare clock 0x%x before enabling\n",
-				p->clock_handle);
+			mods_error_printk(
+			    "unable to prepare clock 0x%x before enabling\n",
+					  p->clock_handle);
 		}
 		ret = clk_enable(pclk);
 		if (ret) {
-			cl_error("failed to enable clock 0x%x\n",
-				 p->clock_handle);
+			mods_error_printk("failed to enable clock 0x%x\n",
+					  p->clock_handle);
 		} else {
-			cl_debug(DEBUG_CLOCK, "clock 0x%x enabled\n",
-				 p->clock_handle);
+			mods_debug_printk(DEBUG_CLOCK, "clock 0x%x enabled\n",
+					  p->clock_handle);
 		}
 	}
 
@@ -543,10 +408,9 @@ int esc_mods_enable_clock(struct mods_client *client,
 	return ret;
 }
 
-int esc_mods_disable_clock(struct mods_client *client,
-			   struct MODS_CLOCK_HANDLE *p)
+int esc_mods_disable_clock(struct file *pfile, struct MODS_CLOCK_HANDLE *p)
 {
-	struct clk *pclk = NULL;
+	struct clk *pclk = 0;
 	int ret = -EINVAL;
 
 	LOG_ENT();
@@ -554,12 +418,13 @@ int esc_mods_disable_clock(struct mods_client *client,
 	pclk = mods_get_clock(p->clock_handle);
 
 	if (!pclk) {
-		cl_error("unrecognized clock handle: 0x%x\n", p->clock_handle);
+		mods_error_printk("unrecognized clock handle: 0x%x\n",
+				  p->clock_handle);
 	} else {
 		clk_disable(pclk);
 		clk_unprepare(pclk);
-		cl_debug(DEBUG_CLOCK, "clock 0x%x disabled\n",
-			 p->clock_handle);
+		mods_debug_printk(DEBUG_CLOCK, "clock 0x%x disabled\n",
+				  p->clock_handle);
 		ret = OK;
 	}
 
@@ -567,10 +432,9 @@ int esc_mods_disable_clock(struct mods_client *client,
 	return ret;
 }
 
-int esc_mods_is_clock_enabled(struct mods_client *client,
-			      struct MODS_CLOCK_ENABLED *p)
+int esc_mods_is_clock_enabled(struct file *pfile, struct MODS_CLOCK_ENABLED *p)
 {
-	struct clk *pclk = NULL;
+	struct clk *pclk = 0;
 	int ret = -EINVAL;
 
 	LOG_ENT();
@@ -578,11 +442,12 @@ int esc_mods_is_clock_enabled(struct mods_client *client,
 	pclk = mods_get_clock(p->clock_handle);
 
 	if (!pclk) {
-		cl_error("unrecognized clock handle: 0x%x\n", p->clock_handle);
+		mods_error_printk("unrecognized clock handle: 0x%x\n",
+				  p->clock_handle);
 	} else {
 		p->enable_count = (u32)__clk_is_enabled(pclk);
-		cl_debug(DEBUG_CLOCK, "clock 0x%x enable count is %u\n",
-			 p->clock_handle, p->enable_count);
+		mods_debug_printk(DEBUG_CLOCK, "clock 0x%x enable count is %u\n",
+				  p->clock_handle, p->enable_count);
 		ret = OK;
 	}
 
@@ -590,49 +455,10 @@ int esc_mods_is_clock_enabled(struct mods_client *client,
 	return ret;
 }
 
-int esc_mods_reset_assert(struct mods_client *client,
-			  struct MODS_RESET_HANDLE *p)
-{
-	int err = -EINVAL;
-	const struct reset_data reset_data = find_reset_data(p->handle);
-	struct device_node *mods_np = NULL;
-
-	LOG_ENT();
-	mods_np = find_clocks_node("mods-clocks");
-	if (!mods_np || !of_device_is_available(mods_np)) {
-		cl_error("'mods-clocks' node not found in DTB\n");
-		goto error;
-	}
-
-	if (!reset_data.rst) {
-		cl_error("No reset corresponding to requested handle!\n");
-		goto error;
-	}
-
-	if (p->assert)
-		err = reset_control_assert(reset_data.rst);
-	else
-		err = reset_control_deassert(reset_data.rst);
-	if (err) {
-		cl_error("failed to %s reset on '%s'\n",
-			 (p->assert ? "asserted" : "deasserted"),
-			 reset_data.name);
-	} else {
-		cl_debug(DEBUG_CLOCK, "%s reset on '%s'",
-			 (p->assert ? "asserted" : "desasserted"),
-			 reset_data.name);
-	}
-error:
-	of_node_put(mods_np);
-
-	LOG_EXT();
-	return err;
-}
-
-int esc_mods_clock_reset_assert(struct mods_client *client,
+int esc_mods_clock_reset_assert(struct file *pfile,
 				struct MODS_CLOCK_HANDLE *p)
 {
-	struct clk *pclk = NULL;
+	struct clk *pclk = 0;
 	int ret = -EINVAL;
 
 	LOG_ENT();
@@ -640,23 +466,24 @@ int esc_mods_clock_reset_assert(struct mods_client *client,
 	pclk = mods_get_clock(p->clock_handle);
 
 	if (!pclk) {
-		cl_error("unrecognized clock handle: 0x%x\n", p->clock_handle);
+		mods_error_printk("unrecognized clock handle: 0x%x\n",
+				  p->clock_handle);
 	} else {
-		const char *clk_name = NULL;
-		struct reset_control *prst = NULL;
-		struct device_node *mods_np = NULL;
-		struct property *pp = NULL;
+		const char *clk_name = 0;
+		struct reset_control *prst = 0;
+		struct device_node *mods_np = 0;
+		struct property *pp = 0;
 
 		mods_np = find_clocks_node("mods-clocks");
 		if (!mods_np || !of_device_is_available(mods_np)) {
-			cl_error("'mods-clocks' node not found in DTB\n");
+			mods_error_printk("'mods-clocks' node not found in DTB\n");
 			goto err;
 		}
 		pp = of_find_property(mods_np, "reset-names", NULL);
 		if (IS_ERR(pp)) {
-			cl_error(
-				"No 'reset-names' prop in 'mods-clocks' node for dev %s\n",
-				__clk_get_name(pclk));
+			mods_error_printk(
+		    "No 'reset-names' prop in 'mods-clocks' node for dev %s\n",
+					  __clk_get_name(pclk));
 			goto err;
 		}
 
@@ -664,15 +491,17 @@ int esc_mods_clock_reset_assert(struct mods_client *client,
 
 		prst = of_reset_control_get(mods_np, clk_name);
 		if (IS_ERR(prst)) {
-			cl_error("reset device %s not found\n", clk_name);
+			mods_error_printk("reset device %s not found\n",
+					  clk_name);
 			goto err;
 		}
 		ret = reset_control_assert(prst);
 		if (ret) {
-			cl_error("failed to assert reset on '%s'\n", clk_name);
+			mods_error_printk("failed to assert reset on '%s'\n",
+					  clk_name);
 		} else {
-			cl_debug(DEBUG_CLOCK, "asserted reset on '%s'",
-				 clk_name);
+			mods_debug_printk(DEBUG_CLOCK, "asserted reset on '%s'",
+					  clk_name);
 		}
 
 err:
@@ -682,10 +511,10 @@ err:
 	return ret;
 }
 
-int esc_mods_clock_reset_deassert(struct mods_client *client,
+int esc_mods_clock_reset_deassert(struct file *pfile,
 				  struct MODS_CLOCK_HANDLE *p)
 {
-	struct clk *pclk = NULL;
+	struct clk *pclk = 0;
 	int ret = -EINVAL;
 
 	LOG_ENT();
@@ -693,23 +522,24 @@ int esc_mods_clock_reset_deassert(struct mods_client *client,
 	pclk = mods_get_clock(p->clock_handle);
 
 	if (!pclk) {
-		cl_error("unrecognized clock handle: 0x%x\n", p->clock_handle);
+		mods_error_printk("unrecognized clock handle: 0x%x\n",
+				  p->clock_handle);
 	} else {
-		const char *clk_name = NULL;
-		struct reset_control *prst = NULL;
-		struct device_node *mods_np = NULL;
-		struct property *pp = NULL;
+		const char *clk_name = 0;
+		struct reset_control *prst = 0;
+		struct device_node *mods_np = 0;
+		struct property *pp = 0;
 
 		mods_np = find_clocks_node("mods-clocks");
 		if (!mods_np || !of_device_is_available(mods_np)) {
-			cl_error("'mods-clocks' node not found in DTB\n");
+			mods_error_printk("'mods-clocks' node not found in DTB\n");
 			goto err;
 		}
 		pp = of_find_property(mods_np, "reset-names", NULL);
 		if (IS_ERR(pp)) {
-			cl_error(
-				"No 'reset-names' prop in 'mods-clocks' node for dev %s\n",
-				__clk_get_name(pclk));
+			mods_error_printk(
+		    "No 'reset-names' prop in 'mods-clocks' node for dev %s\n",
+					  __clk_get_name(pclk));
 			goto err;
 		}
 
@@ -717,15 +547,17 @@ int esc_mods_clock_reset_deassert(struct mods_client *client,
 
 		prst = of_reset_control_get(mods_np, clk_name);
 		if (IS_ERR(prst)) {
-			cl_error("reset device %s not found\n", clk_name);
+			mods_error_printk(
+				"reset device %s not found\n", clk_name);
 			goto err;
 		}
 		ret = reset_control_deassert(prst);
 		if (ret) {
-			cl_error("failed to assert reset on '%s'\n", clk_name);
+			mods_error_printk("failed to assert reset on '%s'\n",
+					  clk_name);
 		} else {
-			cl_debug(DEBUG_CLOCK, "deasserted reset on '%s'",
-				 clk_name);
+			mods_debug_printk(DEBUG_CLOCK, "deasserted reset on '%s'",
+					  clk_name);
 		}
 
 err:

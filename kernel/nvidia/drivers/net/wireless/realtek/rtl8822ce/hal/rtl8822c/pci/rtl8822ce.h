@@ -17,7 +17,7 @@
 
 #include <drv_types.h>		/* PADAPTER */
 
-#ifdef CONFIG_PCI_TX_POLLING
+#if defined (CONFIG_PCI_TX_POLLING) && !defined (CONFIG_PCI_TX_POLLING_V2)
 #define TX_BD_NUM_8822CE	256
 #else
 #define TX_BD_NUM_8822CE	128
@@ -94,6 +94,9 @@ int rtl8822ce_init_txbd_ring(PADAPTER, unsigned int q_idx,
 void rtl8822ce_free_txbd_ring(PADAPTER, unsigned int prio);
 
 void rtl8822ce_tx_isr(PADAPTER, int prio);
+#ifdef CONFIG_PCI_TX_POLLING_V2
+void rtl8822ce_tx_isr_polling(PADAPTER, int prio);
+#endif
 
 #ifdef CONFIG_PCI_TX_POLLING
 void rtl8822ce_tx_ring_poll(PADAPTER Adapter, int prio);

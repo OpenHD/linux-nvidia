@@ -6,7 +6,7 @@
  *         Colin Cross <ccross@android.com>
  *         Travis Geiselbrecht <travis@palm.com>
  *
- * Copyright (c) 2010-2022, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2010-2021, NVIDIA CORPORATION, All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -35,9 +35,6 @@
 #include <linux/console.h>
 #include <linux/nvhost.h>
 #include <linux/nvmap.h>
-#if KERNEL_VERSION(5, 4, 0) < LINUX_VERSION_CODE
-#include <linux/fbcon.h>
-#endif
 
 #include <linux/iommu.h>
 
@@ -49,7 +46,6 @@
 #include "dc/dc_priv.h"
 #include "dc/edid.h"
 #include "dc/dc_config.h"
-#include <linux/nospec.h>
 
 /* Pad pitch to 64-byte boundary. */
 #define TEGRA_LINEAR_PITCH_ALIGNMENT 64
@@ -342,11 +338,7 @@ static int tegra_fb_setcolreg(unsigned regno, unsigned red, unsigned green,
 		v = (red << var->red.offset) |
 			(green << var->green.offset) |
 			(blue << var->blue.offset);
-		/*
-		 * Index(regno) and data(v) both are coming
-		 * from user via ioctl call in kernel.
-		 */
-		regno = array_index_nospec(regno, 16);
+
 		((u32 *)info->pseudo_palette)[regno] = v;
 	}
 
@@ -414,8 +406,6 @@ static int tegra_fb_setcmap(struct fb_cmap *cmap, struct fb_info *info)
 						(((u64)*blue++ >> 8) << 32));
 				}
 			}
-			/* data(red, green and blue) is coming from user. */
-			spec_bar();
 			tegra_dc_update_lut(dc, -1, -1);
 		}
 	}
@@ -453,7 +443,7 @@ static int tegra_fb_blank(int blank, struct fb_info *info)
 			    tegra_fb->win.idx != ((u8)-1)) {
 				struct tegra_dc_win *win = &tegra_fb->win;
 
-				ret = tegra_dc_update_windows(&win, 1,
+				ret = tegra_dc_update_windows(&win, 1, NULL,
 						true, false);
 				if (ret) {
 					dev_info(pdev,
@@ -573,7 +563,8 @@ static int tegra_fb_pan_display(struct fb_var_screeninfo *var,
 
 		if (!tegra_fb->win.dc->suspended) {
 			struct tegra_dc_win *win = &tegra_fb->win;
-			tegra_dc_update_windows(&win, 1, true, false);
+			tegra_dc_update_windows(&win, 1, NULL,
+							true, false);
 			tegra_dc_sync_windows(&win, 1);
 			tegra_dc_program_bandwidth(win->dc, true);
 		}
@@ -822,7 +813,7 @@ static int tegra_fb_mmap(struct fb_info *info,
 		return -ENOMEM;
 
 	tegra_fb->mmap_count++;
-	return dma_mmap_wc(&tegra_fb->ndev->dev, vma,
+	return dma_mmap_writecombine(&tegra_fb->ndev->dev, vma,
 					tegra_fb->win.virt_addr,
 					tegra_fb->phys_start,
 					tegra_fb->fb_size);
@@ -866,45 +857,26 @@ void tegra_fbcon_set_fb_mode(struct tegra_fb_info *fb_info,
 {
 	struct fb_var_screeninfo var;
 	struct tegra_dc *dc = fb_info->win.dc;
-	int __maybe_unused err = 0;
+
+	/*
+	 * Disable DC and blank console before modeset.
+	 * Set MISC_USEREVENT flag to indicate user requested blank and to
+	 * update consoles in fb_set_var() below.
+	 */
+	fb_info->info->flags |= FBINFO_MISC_USEREVENT;
+	fb_blank(fb_info->info, FB_BLANK_POWERDOWN);
 
 	fb_videomode_to_var(&var, fb_mode);
 	var.bits_per_pixel = dc->pdata->fb->bits_per_pixel;
-
-	/* Disable DC and blank consoles before modeset */
-	fb_blank(fb_info->info, FB_BLANK_POWERDOWN);
-
 	/* Set flags to update all available TTYs immediately */
 	var.activate = FB_ACTIVATE_NOW | FB_ACTIVATE_ALL;
-#if KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE
-	/*
-	 * Set MISC_USEREVENT flag to indicate user requested blank and to
-	 * update consoles in fb_set_var().
-	 */
-	fb_info->info->flags |= FBINFO_MISC_USEREVENT;
+
+	/* Set var_screeninfo */
 	fb_set_var(fb_info->info, &var);
+
+	/* Enable DC and unblank console */
 	fb_info->info->flags |= FBINFO_MISC_USEREVENT;
-#else
-	err = fb_set_var(fb_info->info, &var);
-	/* Update mode on all consoles with FB_ACTIVATE_ALL */
-	if (!err)
-		fbcon_update_vcs(fb_info->info,
-				((var.activate & FB_ACTIVATE_ALL) != 0));
-#endif
-	/* Enable DC and unblank consoles */
 	fb_blank(fb_info->info, FB_BLANK_UNBLANK);
-}
-
-static int tegra_fb_lock_fb_info(struct fb_info *info)
-{
-	int b_locked_fb_info = 1;
-
-#if KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE
-	b_locked_fb_info = lock_fb_info(info);
-#else
-	lock_fb_info(info);
-#endif
-	return b_locked_fb_info;
 }
 
 void tegra_fb_update_monspecs(struct tegra_fb_info *fb_info,
@@ -913,6 +885,7 @@ void tegra_fb_update_monspecs(struct tegra_fb_info *fb_info,
 						  struct fb_videomode *mode))
 
 {
+	struct fb_event event;
 	int i, b_locked_fb_info = 0;
 	struct tegra_dc *dc = fb_info->win.dc;
 
@@ -922,8 +895,7 @@ void tegra_fb_update_monspecs(struct tegra_fb_info *fb_info,
 	}
 
 	console_lock();
-	b_locked_fb_info = tegra_fb_lock_fb_info(fb_info->info);
-
+	b_locked_fb_info = lock_fb_info(fb_info->info);
 	/*
 	 * fb_info modedb shares the same pointer as specs modedb. Avoid freeing
 	 * modedb pointer if specs modedb is still valid. This helps avoid using
@@ -934,13 +906,11 @@ void tegra_fb_update_monspecs(struct tegra_fb_info *fb_info,
 		fb_info->info->monspecs.modedb = NULL;
 	}
 	fb_destroy_modelist(&fb_info->info->modelist);
+	event.info = fb_info->info;
 	/* Notify layers above fb.c that the hardware is unavailable */
 	fb_set_suspend(fb_info->info, true);
 
 	if (specs == NULL) {
-		struct fb_event __maybe_unused event;
-
-		event.info = fb_info->info;
 		memset(&fb_info->info->monspecs, 0x0,
 		       sizeof(fb_info->info->monspecs));
 
@@ -951,14 +921,11 @@ void tegra_fb_update_monspecs(struct tegra_fb_info *fb_info,
 		fb_info->info->mode = (struct fb_videomode*) NULL;
 
 		if (IS_ENABLED(CONFIG_FRAMEBUFFER_CONSOLE)) {
-#if KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE
 			/*
-			 * FBINFO_MISC_USEREVENT flag to indicate user
-			 * requested blank.
+			 * Disable DC and blank console. Set MISC_USEREVENT
+			 * flag to indicate user requested blank.
 			 */
 			fb_info->info->flags |= FBINFO_MISC_USEREVENT;
-#endif
-			/* Disable DC and blank console */
 			fb_blank(fb_info->info, FB_BLANK_POWERDOWN);
 			/*
 			 * fbconsole needs at least one mode in modelist. Add
@@ -969,11 +936,7 @@ void tegra_fb_update_monspecs(struct tegra_fb_info *fb_info,
 			 */
 			fb_add_videomode(&fb_info->mode,
 						&fb_info->info->modelist);
-#if KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE
 			fb_notifier_call_chain(FB_EVENT_NEW_MODELIST, &event);
-#else
-			fbcon_new_modelist(fb_info->info);
-#endif
 		} else {
 			/* For L4T - After the next hotplug, framebuffer console will
 			 * use the old variable screeninfo by default, only video-mode
@@ -984,7 +947,6 @@ void tegra_fb_update_monspecs(struct tegra_fb_info *fb_info,
 
 		if (b_locked_fb_info)
 			unlock_fb_info(fb_info->info);
-
 		console_unlock();
 		return;
 	}
@@ -1003,8 +965,6 @@ void tegra_fb_update_monspecs(struct tegra_fb_info *fb_info,
 					 &fb_info->info->modelist);
 		}
 	}
-	/* specs are coming from user. */
-	spec_bar();
 
 	if (dc->out_ops->vrr_update_monspecs)
 		dc->out_ops->vrr_update_monspecs(dc,
@@ -1032,11 +992,12 @@ void tegra_fb_update_monspecs(struct tegra_fb_info *fb_info,
 
 		fb_info->info->state = FBINFO_STATE_RUNNING;
 		tegra_fbcon_set_fb_mode(fb_info, &fb_mode);
+	} else {
+		if (!IS_ENABLED(CONFIG_FRAMEBUFFER_CONSOLE))
+			fb_notifier_call_chain(FB_EVENT_NEW_MODELIST, &event);
 	}
-
 	if (b_locked_fb_info)
 		unlock_fb_info(fb_info->info);
-
 	console_unlock();
 }
 
@@ -1046,10 +1007,10 @@ void tegra_fb_update_fix(struct tegra_fb_info *fb_info,
 	struct tegra_dc *dc = fb_info->win.dc;
 	struct tegra_edid *dc_edid = dc->edid;
 	struct fb_fix_screeninfo *fix = &fb_info->info->fix;
-	int	b_locked_fb_info = 0;
+	int	b_locked_fb_info;
 
 	console_lock();
-	b_locked_fb_info = tegra_fb_lock_fb_info(fb_info->info);
+	b_locked_fb_info = lock_fb_info(fb_info->info);
 
 	/* FB_CAP_* and TEGRA_DC_* color depth flags are shifted by 1 */
 	BUILD_BUG_ON((TEGRA_DC_Y420_30 << 1) != FB_CAP_Y420_DC_30);
@@ -1271,6 +1232,7 @@ struct tegra_fb_info *tegra_fb_register(struct platform_device *ndev,
 	int mode_idx;
 	unsigned stride = 0;
 	struct fb_videomode m;
+	DEFINE_DMA_ATTRS(attrs);
 
 	if (fb_data->win > -1) {
 		if (!tegra_dc_get_window(dc, fb_data->win)) {
@@ -1312,11 +1274,12 @@ struct tegra_fb_info *tegra_fb_register(struct platform_device *ndev,
 		tegra_fb->win.phys_addr = 0;
 	}
 
+	dma_set_attr(DMA_ATTR_WRITE_COMBINE, __DMA_ATTR(attrs));
 	tegra_fb->blank_base = dma_alloc_attrs(&ndev->dev,
 					       BLANK_LINE_SIZE,
 					       &tegra_fb->blank_start,
 					       GFP_KERNEL,
-					       DMA_ATTR_WRITE_COMBINE);
+					       __DMA_ATTR(attrs));
 	if (!tegra_fb->blank_base) {
 		dev_err(&ndev->dev, "failed to allocate blank buffer\n");
 		ret = -EBUSY;
@@ -1335,7 +1298,10 @@ struct tegra_fb_info *tegra_fb_register(struct platform_device *ndev,
 	info->pseudo_palette = pseudo_palette;
 	info->screen_base = tegra_fb->win.virt_addr;
 	info->screen_size = tegra_fb->fb_size;
-	info->state = FBINFO_STATE_SUSPENDED;
+	if (dc->out->type == TEGRA_DC_OUT_DSI)
+	    info->state = FBINFO_STATE_RUNNING;
+	else
+	    info->state = FBINFO_STATE_SUSPENDED;
 	strlcpy(info->fix.id, "tegra_fb", sizeof(info->fix.id));
 	info->fix.type		= FB_TYPE_PACKED_PIXELS;
 	info->fix.visual	= FB_VISUAL_TRUECOLOR;
@@ -1417,7 +1383,7 @@ struct tegra_fb_info *tegra_fb_register(struct platform_device *ndev,
 	if ((fb_data->flags & TEGRA_FB_FLIP_ON_PROBE) &&
 			(fb_data->win > -1)) {
 		struct tegra_dc_win *win = &tegra_fb->win;
-		tegra_dc_update_windows(&win, 1, true, false);
+		tegra_dc_update_windows(&win, 1, NULL, true, false);
 		tegra_dc_sync_windows(&win, 1);
 		tegra_dc_program_bandwidth(win->dc, true);
 	}
@@ -1428,7 +1394,7 @@ struct tegra_fb_info *tegra_fb_register(struct platform_device *ndev,
 
 err_iounmap_fb:
 	dma_free_attrs(&ndev->dev, BLANK_LINE_SIZE, tegra_fb->blank_base,
-		       tegra_fb->blank_start, DMA_ATTR_WRITE_COMBINE);
+		       tegra_fb->blank_start, __DMA_ATTR(attrs));
 err_free_fbmem:
 	tegra_fb_release_fbmem(tegra_fb);
 err_free:
@@ -1441,9 +1407,12 @@ void tegra_fb_unregister(struct tegra_fb_info *fb_info)
 {
 	struct fb_info *info = fb_info->info;
 	struct device *dev = &fb_info->ndev->dev;
+	DEFINE_DMA_ATTRS(attrs);
+
+	dma_set_attr(DMA_ATTR_WRITE_COMBINE, __DMA_ATTR(attrs));
 
 	dma_free_attrs(dev, BLANK_LINE_SIZE, fb_info->blank_base,
-		       fb_info->blank_start, DMA_ATTR_WRITE_COMBINE);
+		       fb_info->blank_start, __DMA_ATTR(attrs));
 
 	tegra_fb_release_fbmem(fb_info);
 	unregister_framebuffer(info);

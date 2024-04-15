@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2023, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2016-2018, NVIDIA CORPORATION.  All rights reserved.
  *
  * Author: Suresh Mangipudi <smangipudi@nvidia.com>
  *
@@ -23,12 +23,7 @@
 #include <linux/platform_device.h>
 #include <linux/pinctrl/pinconf-generic.h>
 #include <linux/reset.h>
-#include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
-#include <linux/pm_domain.h>
-#else
 #include <linux/tegra-powergate.h>
-#endif
 
 #include <dt-bindings/soc/tegra186-powergate.h>
 #include <dt-bindings/soc/tegra194-powergate.h>
@@ -43,7 +38,6 @@
 
 #define DPAUX_HYBRID_SPARE		0x134
 #define PAD_PWR				BIT(0)
-#define RCV_33_18_SEL			BIT(1)
 
 struct tegra_dpaux_function {
 	const char *name;
@@ -261,25 +255,6 @@ static int tegra_dpaux_pinctrl_set_mode(struct tegra_dpaux_pinctl *tdpaux_ctl,
 	return ret;
 }
 
-static int tegra_dpaux_pinctrl_set_rcv_detect_3_3v(
-				struct tegra_dpaux_pinctl *tdpaux_ctl)
-{
-	int ret = 0;
-
-	ret = clk_prepare_enable(tdpaux_ctl->dpaux_clk);
-	if (ret) {
-		dev_err(tdpaux_ctl->dev, "clock enabled failed: %d\n", ret);
-		return ret;
-	}
-
-	tegra_dpaux_update(tdpaux_ctl, DPAUX_HYBRID_SPARE, RCV_33_18_SEL,
-			RCV_33_18_SEL);
-
-	clk_disable_unprepare(tdpaux_ctl->dpaux_clk);
-
-	return ret;
-}
-
 static int tegra_dpaux_pinctrl_get_groups_count(struct pinctrl_dev *pctldev)
 {
 	struct tegra_dpaux_pinctl *padctl = pinctrl_dev_get_drvdata(pctldev);
@@ -355,47 +330,6 @@ static const struct pinmux_ops tegra_dpaux_pinmux_ops = {
 	.set_mux = tegra_dpaux_pinctrl_set_mux,
 };
 
-enum tegra_dpaux_pinctrl_pinconf_params {
-	PIN_CONFIG_RCV_SEL_3_3V = PIN_CONFIG_END + 1,
-};
-
-static const struct pinconf_generic_params tegra_dpaux_pinctrl_cfg_params[] = {
-	{
-		.property = "nvidia,set-rcv-det-3.3v-signal",
-		.param = PIN_CONFIG_RCV_SEL_3_3V,
-	},
-};
-
-static int tegra_dpaux_pinctrl_pinconf_set(struct pinctrl_dev *pctl_dev,
-				unsigned int pin, unsigned long *configs,
-				unsigned int num_configs)
-{
-	struct tegra_dpaux_pinctl *padctl = pinctrl_dev_get_drvdata(pctl_dev);
-	u16 param;
-	unsigned int i;
-	int err;
-
-	for (i = 0; i < num_configs; ++i) {
-		param = pinconf_to_config_param(configs[i]);
-
-		switch (param) {
-		case PIN_CONFIG_RCV_SEL_3_3V:
-			err = tegra_dpaux_pinctrl_set_rcv_detect_3_3v(padctl);
-			if (err)
-				return err;
-			break;
-		default:
-			return -EINVAL;
-		}
-	}
-
-	return 0;
-}
-
-static const struct pinconf_ops tegra_dpaux_pinconf_ops = {
-	.pin_config_set = tegra_dpaux_pinctrl_pinconf_set,
-};
-
 static int tegra186_dpaux_pinctrl_probe(struct platform_device *pdev)
 {
 	struct tegra_dpaux_chip_data *cdata;
@@ -410,10 +344,6 @@ static int tegra186_dpaux_pinctrl_probe(struct platform_device *pdev)
 	tdpaux_ctl->dev = &pdev->dev;
 	cdata = (struct tegra_dpaux_chip_data *)
 				of_device_get_match_data(&pdev->dev);
-	if (!cdata) {
-		dev_err(&pdev->dev, "no device match found for dpaux_pinctrl\n");
-		return -EINVAL;
-	}
 
 	tdpaux_ctl->pdev = pdev;
 	tdpaux_ctl->regs = devm_ioremap_resource(&pdev->dev,
@@ -436,42 +366,26 @@ static int tegra186_dpaux_pinctrl_probe(struct platform_device *pdev)
 	tdpaux_ctl->desc.npins = tdpaux_ctl->npins;
 	tdpaux_ctl->desc.pctlops = &tegra_dpaux_pinctrl_ops;
 	tdpaux_ctl->desc.pmxops = &tegra_dpaux_pinmux_ops;
-	tdpaux_ctl->desc.confops = &tegra_dpaux_pinconf_ops;
-	tdpaux_ctl->desc.custom_params = tegra_dpaux_pinctrl_cfg_params;
-	tdpaux_ctl->desc.num_custom_params =
-				ARRAY_SIZE(tegra_dpaux_pinctrl_cfg_params);
 	tdpaux_ctl->desc.owner = THIS_MODULE;
 	tdpaux_ctl->powergate_id = cdata->powergate_id;
 	platform_set_drvdata(pdev, tdpaux_ctl);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
-	ret = dev_pm_domain_attach(tdpaux_ctl->dev, true);
-	if (ret) {
-		dev_err(tdpaux_ctl->dev, "pm domain attach failed: %d\n", ret);
-		return ret;
-	}
-#else
 	ret = tegra_unpowergate_partition(tdpaux_ctl->powergate_id);
 	if (ret < 0) {
 		dev_err(tdpaux_ctl->dev, "unpowergate failed: %d\n", ret);
 		return ret;
 	}
-#endif
 
 	tdpaux_ctl->dpaux_clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(tdpaux_ctl->dpaux_clk)) {
-		ret = PTR_ERR(tdpaux_ctl->dpaux_clk);
-		if (ret != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "can not get clock, err=%d\n", ret);
-		return ret;
+		dev_err(&pdev->dev, "can not get clock\n");
+		return PTR_ERR(tdpaux_ctl->dpaux_clk);
 	}
 
 	rst = devm_reset_control_get(&pdev->dev, NULL);
 	if (IS_ERR(rst)) {
-		ret = PTR_ERR(rst);
-		if (ret != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "can not get reset, err=%d\n", ret);
-		return ret;
+		dev_err(&pdev->dev, "can not get reset\n");
+		return PTR_ERR(rst);
 	}
 
 	reset_control_deassert(rst);
@@ -491,11 +405,7 @@ static int tegra_dpaux_remove(struct platform_device *pdev)
 {
 	struct tegra_dpaux_pinctl *tdpaux_ctl = platform_get_drvdata(pdev);
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
-	dev_pm_domain_detach(tdpaux_ctl->dev, true);
-#else
 	tegra_powergate_partition(tdpaux_ctl->powergate_id);
-#endif
 
 	return 0;
 }

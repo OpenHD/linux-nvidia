@@ -22,7 +22,6 @@
 
 #include "iomap.h"
 #include <soc/tegra/pmc.h>
-void (*uefi_handle_reboot_cmd)(const char *cmd);
 
 static void program_reboot_reason(const char *cmd)
 {
@@ -59,7 +58,6 @@ static void program_reboot_reason(const char *cmd)
 static __init int tegra_register_reboot_handler(void)
 {
 	psci_handle_reboot_cmd = program_reboot_reason;
-	uefi_handle_reboot_cmd = program_reboot_reason;
 	pr_info("Tegra reboot handler registered.\n");
 	return 0;
 }
