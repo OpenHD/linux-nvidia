@@ -36,8 +36,8 @@ jobs:
 
       - name: Add OpenHD patches
         run: |
-          patch -p1 -i patches/imx577_20200215.patch
-          patch -p1 -i patches/imx577_20200226.patch
+          patch -p0 < patches/imx577_20200215.patch
+          #patch -p0 < patches/imx577_20200226.patch
 
       - name: Building Kernel
         run: |
