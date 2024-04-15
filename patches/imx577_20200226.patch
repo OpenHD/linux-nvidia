@@ -1,0 +1,3284 @@
+diff -Nuar kernel_original/nvidia/drivers/media/i2c/imx477.c kernel/nvidia/drivers/media/i2c/imx477.c
+--- kernel_original/nvidia/drivers/media/i2c/imx477.c	1970-01-01 08:00:00.000000000 +0800
++++ kernel/nvidia/drivers/media/i2c/imx477.c	2020-02-26 09:23:08.821054529 +0800
+@@ -0,0 +1,670 @@
++/*
++ * imx477.c - imx477 sensor driver
++ *
++ * Copyright (c) 2018-2019, NVIDIA CORPORATION.  All rights reserved.
++ *
++ * Copyright (c) 2016-2019, Guoxin Wu <guoxinw@leopardimaging.com>.
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms and conditions of the GNU General Public License,
++ * version 2, as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/gpio.h>
++#include <linux/module.h>
++
++#include <linux/seq_file.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/of_gpio.h>
++
++
++#include <media/tegracam_core.h>
++#include <media/imx477.h>
++#include "imx477_mode_tbls.h"
++
++#define IMX477_GAIN_SHIFT		8
++#define IMX477_GAIN_REG_MAX			(978)
++#define IMX477_MAX_DIGITAL_GAIN			(16)
++#define IMX477_MAX_ANALOG_GAIN			(22)
++#define IMX477_GAIN_CONST			(1024) /* for gain formula */
++#define IMX477_MIN_GAIN		(1)
++#define IMX477_MAX_GAIN		(354)
++#define IMX477_DEFAULT_GAIN		IMX477_MIN_GAIN
++#define IMX477_DEFAULT_FRAME_LENGTH    (1551)
++#define IMX477_MAX_FRAME_LENGTH    (0xB292)
++#define IMX477_MASK_LSB_2_BITS			(0x03)
++#define IMX477_MASK_LSB_8_BITS			(0x00ff)
++
++#define IMX477_ANALOG_GAIN_ADDR_LSB		0x0205 /* ANALOG GAIN LSB */
++#define IMX477_ANALOG_GAIN_ADDR_MSB		0x0204 /* ANALOG GAIN MSB */
++#define IMX477_DIGITAL_GAIN_REG_LOW		0x020F /* Digital Gain */
++#define IMX477_DIGITAL_GAIN_REG_HIG		0x020E /* Digital Gain */
++
++
++const struct of_device_id imx477_of_match[] = {
++	{ .compatible = "nvidia,imx477",},
++	{ },
++};
++MODULE_DEVICE_TABLE(of, imx477_of_match);
++
++static const u32 ctrl_cid_list[] = {
++	TEGRA_CAMERA_CID_GAIN,
++	TEGRA_CAMERA_CID_EXPOSURE,
++	TEGRA_CAMERA_CID_EXPOSURE_SHORT,
++	TEGRA_CAMERA_CID_FRAME_RATE,
++	TEGRA_CAMERA_CID_HDR_EN,
++};
++
++struct imx477 {
++	struct i2c_client	*i2c_client;
++	const struct i2c_device_id *id;
++	struct v4l2_subdev	*subdev;
++	struct mutex			streaming_lock;
++	u32	frame_length;
++	u32 	sensor_id;
++	struct camera_common_data	*s_data;
++	struct tegracam_device		*tc_dev;
++};
++
++
++static const struct regmap_config sensor_regmap_config = {
++	.reg_bits = 16,
++	.val_bits = 8,
++	.cache_type = REGCACHE_RBTREE,
++};
++
++static inline void imx477_get_frame_length_regs(imx477_reg *regs,
++				u32 frame_length)
++{
++	regs->addr = IMX477_VMAX_ADDR_MSB;
++	regs->val = (frame_length >> 8) & 0xff;
++
++	(regs + 1)->addr = IMX477_VMAX_ADDR_LSB;
++	(regs + 1)->val = (frame_length) & 0xff;
++}
++
++static inline void imx477_get_coarse_time_regs(imx477_reg *regs,
++				u32 coarse_time)
++{
++	regs->addr = IMX477_SHR_ADDR_MSB;
++	regs->val = (coarse_time >> 8) & 0xff;
++
++	(regs + 1)->addr = IMX477_SHR_ADDR_LSB;
++	(regs + 1)->val = coarse_time & 0xff;
++}
++
++
++static inline void imx477_calculate_gain_regs(imx477_reg *regs,
++				u16 gain)
++{
++	regs->addr = IMX477_ANALOG_GAIN_ADDR_MSB;
++	regs->val = (gain >> 8) & IMX477_MASK_LSB_2_BITS;
++	(regs + 1)->addr = IMX477_ANALOG_GAIN_ADDR_LSB;
++	(regs + 1)->val = gain & 0xff;
++}
++
++static int test_mode;
++module_param(test_mode, int, 0644);
++
++static inline int imx477_read_reg(struct camera_common_data *s_data,
++				u16 addr, u8 *val)
++{
++	int err = 0;
++	u32 reg_val = 0;
++
++	err = regmap_read(s_data->regmap, addr, &reg_val);
++	*val = reg_val & 0xFF;
++
++	return err;
++}
++
++static int imx477_write_reg(struct camera_common_data *s_data,
++				u16 addr, u8 val)
++{
++	int err;
++	struct device *dev = s_data->dev;
++
++	err = regmap_write(s_data->regmap, addr, val);
++	if (err)
++		dev_err(dev, "%s:i2c write failed, 0x%x = %x\n",
++			__func__, addr, val);
++
++	return err;
++}
++
++static int imx477_write_table(struct imx477 *priv,
++				const imx477_reg table[])
++{
++	struct camera_common_data *s_data = priv->s_data;
++	return regmap_util_write_table_8(s_data->regmap,
++					 table,
++					 NULL, 0,
++					 IMX477_TABLE_WAIT_MS,
++					 IMX477_TABLE_END);
++}
++
++static int imx477_power_on(struct camera_common_data *s_data)
++{
++	int err = 0;
++	struct camera_common_power_rail *pw = s_data->power;
++	struct camera_common_pdata *pdata = s_data->pdata;
++	struct device *dev = s_data->dev;
++
++	dev_dbg(dev, "%s: power on\n", __func__);
++	if (pdata && pdata->power_on) {
++		err = pdata->power_on(pw);
++		if (err)
++			dev_err(dev, "%s failed.\n", __func__);
++		else
++			pw->state = SWITCH_ON;
++		return err;
++	}
++
++	pw->state = SWITCH_ON;
++
++	return 0;
++}
++
++static int imx477_power_off(struct camera_common_data *s_data)
++{
++	int err = 0;
++	struct camera_common_power_rail *pw = s_data->power;
++	struct camera_common_pdata *pdata = s_data->pdata;
++	struct device *dev = s_data->dev;
++
++	dev_dbg(dev, "%s:\n", __func__);
++
++	if (pdata && pdata->power_off) {
++		err = pdata->power_off(pw);
++		if (!err)
++			goto power_off_done;
++		else
++			dev_err(dev, "%s failed.\n", __func__);
++		return err;
++	}
++
++power_off_done:
++	pw->state = SWITCH_OFF;
++
++	return 0;
++}
++
++static int imx477_power_get(struct tegracam_device *tc_dev)
++{
++	struct device *dev = tc_dev->dev;
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct camera_common_power_rail *pw = s_data->power;
++	struct camera_common_pdata *pdata = s_data->pdata;
++	const char *mclk_name;
++	const char *parentclk_name;
++	struct clk *parent;
++	int err = 0;
++
++	mclk_name = pdata->mclk_name ?
++		    pdata->mclk_name : "cam_mclk1";
++	pw->mclk = devm_clk_get(dev, mclk_name);
++	if (IS_ERR(pw->mclk)) {
++		dev_err(dev, "unable to get clock %s\n", mclk_name);
++		return PTR_ERR(pw->mclk);
++	}
++
++	parentclk_name = pdata->parentclk_name;
++	if (parentclk_name) {
++		parent = devm_clk_get(dev, parentclk_name);
++		if (IS_ERR(parent)) {
++			dev_err(dev, "unable to get parent clcok %s",
++				parentclk_name);
++		} else
++			clk_set_parent(pw->mclk, parent);
++	}
++
++	pw->state = SWITCH_OFF;
++
++	return err;
++}
++
++static int imx477_power_put(struct tegracam_device *tc_dev)
++{
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct camera_common_power_rail *pw = s_data->power;
++
++	if (unlikely(!pw))
++		return -EFAULT;
++
++	return 0;
++}
++
++static int imx477_set_group_hold(struct tegracam_device *tc_dev, bool val)
++{
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct device *dev = tc_dev->dev;
++	int err;
++
++    return 0;
++	err = imx477_write_reg(s_data,
++			       IMX477_GROUP_HOLD_ADDR, val);
++	if (err) {
++		dev_dbg(dev,
++			"%s: Group hold control error\n", __func__);
++		return err;
++	}
++
++	return 0;
++}
++
++static int imx477_set_digital_gain(struct camera_common_data *s_data, u32 dgain)
++{
++	int ret;
++
++
++
++	ret = imx477_write_reg(s_data, IMX477_DIGITAL_GAIN_REG_LOW,
++			       dgain & IMX477_MASK_LSB_8_BITS);
++	ret |= imx477_write_reg(s_data, IMX477_DIGITAL_GAIN_REG_HIG,
++			       (dgain >> 8) & IMX477_MASK_LSB_8_BITS);
++	return ret;
++}
++
++static int imx477_set_gain(struct tegracam_device *tc_dev, s64 val)
++{
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct device *dev = tc_dev->dev;
++	const struct sensor_mode_properties *mode =
++		&s_data->sensor_props.sensor_modes[s_data->mode_prop_idx];
++	imx477_reg reg_list[2];
++	int err, i;
++	u32 gain, analog_gain, digital_gain, gain_reg;
++
++	gain = (u32)(val * 256 / mode->control_properties.gain_factor);
++	if (gain > IMX477_MAX_DIGITAL_GAIN * IMX477_MAX_ANALOG_GAIN * 256)
++		gain = IMX477_MAX_DIGITAL_GAIN * IMX477_MAX_ANALOG_GAIN * 256;
++	else if (gain < IMX477_MIN_GAIN * 256)
++		gain = IMX477_MIN_GAIN * 256;
++
++	if(gain > (IMX477_MAX_ANALOG_GAIN << IMX477_GAIN_SHIFT)) {
++		analog_gain = IMX477_MAX_ANALOG_GAIN << IMX477_GAIN_SHIFT;
++		digital_gain = gain / IMX477_MAX_ANALOG_GAIN;
++	} else {
++		analog_gain = gain;
++		digital_gain = 256;
++	}
++	
++
++	dev_dbg(dev, "%s :val = %lld, digital gain = %d, analog gain = %d\n",
++		 __func__, val,digital_gain, analog_gain);
++
++	err = imx477_set_digital_gain(s_data, digital_gain);
++	if (err)
++		goto fail;
++
++	/* convert to register value, refer to imx477 datasheet */
++	gain_reg = IMX477_GAIN_CONST - ((u32)IMX477_GAIN_CONST << IMX477_GAIN_SHIFT) / analog_gain;
++
++	if (gain_reg > IMX477_GAIN_REG_MAX)
++		gain_reg = IMX477_GAIN_REG_MAX;
++
++	imx477_calculate_gain_regs(reg_list, (u16)gain_reg);
++
++	for (i = 0; i < ARRAY_SIZE(reg_list); i++) {
++		err = imx477_write_reg(s_data, reg_list[i].addr,
++			 reg_list[i].val);
++		if (err)
++			goto fail;
++	}
++	return 0;
++
++fail:
++	dev_info(dev, "%s: GAIN control error\n", __func__);
++	return err;
++}
++
++static int imx477_set_frame_rate(struct tegracam_device *tc_dev, s64 val)
++{
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct imx477 *priv = (struct imx477 *)tc_dev->priv;
++	struct device *dev = tc_dev->dev;
++	imx477_reg reg_list[2];
++	int err;
++	u32 frame_length;
++	const struct sensor_mode_properties *mode =
++		&s_data->sensor_props.sensor_modes[s_data->mode_prop_idx];
++	int i = 0;
++
++	frame_length = mode->signal_properties.pixel_clock.val *
++		mode->control_properties.framerate_factor /
++		mode->image_properties.line_length / val;
++
++	
++	priv->frame_length = frame_length;
++	if (priv->frame_length > IMX477_MAX_FRAME_LENGTH)
++		priv->frame_length = IMX477_MAX_FRAME_LENGTH;
++    
++	dev_dbg(dev, "%s: val: %lld, frame_length: %d\n", __func__,
++		val, priv->frame_length);
++
++	imx477_get_frame_length_regs(reg_list, priv->frame_length);
++
++	for (i = 0; i < 2; i++) {
++		err = imx477_write_reg(priv->s_data, reg_list[i].addr,
++			 reg_list[i].val);
++		if (err)
++			goto fail;
++	}
++
++	return 0;
++
++fail:
++	dev_dbg(dev, "%s: FRAME_LENGTH control error\n", __func__);
++	return err;	
++}
++
++static int imx477_set_exposure(struct tegracam_device *tc_dev, s64 val)
++{
++	struct imx477 *priv = (struct imx477 *)tegracam_get_privdata(tc_dev);
++	struct camera_common_data *s_data = tc_dev->s_data;
++	const struct sensor_mode_properties *mode =
++		&s_data->sensor_props.sensor_modes[s_data->mode];
++	imx477_reg reg_list[2];
++	int err;
++	u32 coarse_time;
++	int i = 0;
++
++	if (priv->frame_length == 0)
++		priv->frame_length = IMX477_DEFAULT_FRAME_LENGTH;
++
++	/* coarse time in lines */
++	coarse_time = (u32) (val * s_data->frmfmt[s_data->mode].framerates[0] *
++		priv->frame_length / mode->control_properties.exposure_factor);
++
++    if(coarse_time > priv->frame_length -50)
++         coarse_time = priv->frame_length -50;
++
++	dev_dbg(&priv->i2c_client->dev,
++		"%s: coarse time val:%d\n", __func__,coarse_time);
++
++	imx477_get_coarse_time_regs(reg_list, coarse_time);
++	for (i = 0; i < 2; i++) {
++		err = imx477_write_reg(priv->s_data, reg_list[i].addr,
++			reg_list[i].val);
++		if (err)
++			goto fail;
++	}
++
++	return 0;
++
++fail:
++	dev_dbg(&priv->i2c_client->dev,
++		"%s: set coarse time error\n", __func__);
++	return err;
++}
++
++static struct tegracam_ctrl_ops imx477_ctrl_ops = {
++	.numctrls = ARRAY_SIZE(ctrl_cid_list),
++	.ctrl_cid_list = ctrl_cid_list,
++	.set_gain = imx477_set_gain,
++	.set_exposure = imx477_set_exposure,
++	.set_exposure_short = imx477_set_exposure,
++	.set_frame_rate = imx477_set_frame_rate,
++	.set_group_hold = imx477_set_group_hold,
++};
++
++static struct camera_common_pdata *imx477_parse_dt(struct tegracam_device *tc_dev)
++{
++	struct device *dev = tc_dev->dev;
++	struct device_node *node = dev->of_node;
++	struct camera_common_pdata *board_priv_pdata;
++	const struct of_device_id *match;
++	int err;
++
++	if (!node)
++		return NULL;
++
++	match = of_match_device(imx477_of_match, dev);
++	if (!match) {
++		dev_err(dev, "Failed to find matching dt id\n");
++		return NULL;
++	}
++
++	board_priv_pdata = devm_kzalloc(dev, sizeof(*board_priv_pdata), GFP_KERNEL);
++
++	err = of_property_read_string(node, "mclk",
++				      &board_priv_pdata->mclk_name);
++	if (err)
++		dev_err(dev, "mclk not in DT\n");
++
++	return board_priv_pdata;
++}
++
++
++static int  imx477_device_id(struct device *dev,
++                                struct imx477 *priv)
++{
++	struct device_node *np = dev->of_node;
++	const struct of_device_id *match;
++	int err;
++	const char *str;
++
++	match = of_match_device(imx477_of_match, dev);
++	if (!match) {
++	        dev_err(dev, "Failed to find matching dt id\n");
++	        return -1;
++	}
++	err = of_property_read_string(np, "sensor_operation_mode", &str);
++	if (!err) {
++	    if (!strcmp(str, "master"))
++	    	priv->sensor_id = 0;
++	    else if(!strcmp(str, "slave"))
++	    	priv->sensor_id = 1;
++	}
++	else
++	    dev_err(dev, "Failed to find sensor_operation_mode \n");
++
++	return priv->sensor_id;
++
++}
++
++static int imx477_set_mode(struct tegracam_device *tc_dev)
++{
++	struct imx477 *priv = (struct imx477 *)tegracam_get_privdata(tc_dev);
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct device *dev = tc_dev->dev;
++	const struct of_device_id *match;
++	int err = 0;
++
++	match = of_match_device(imx477_of_match, dev);
++	if (!match) {
++		dev_err(dev, "Failed to find matching dt id\n");
++		return -EINVAL;
++	}
++
++	mutex_lock(&priv->streaming_lock);
++	err = imx477_write_table(priv, mode_table[IMX477_GLOBAL_SETTING]);
++	err |= imx477_write_table(priv, mode_table[IMX477_IMAGE_QUALITY]);
++	err |= imx477_write_table(priv, mode_table[IMX477_MODE_STOP_STREAM]);
++
++	err |= imx477_write_table(priv, mode_table[s_data->mode_prop_idx]);
++	if (err) {
++		mutex_unlock(&priv->streaming_lock);
++		return err;
++	}
++	mutex_unlock(&priv->streaming_lock);
++	
++	return 0;
++}
++
++static int imx477_start_streaming(struct tegracam_device *tc_dev)
++{
++	struct imx477 *priv = (struct imx477 *)tegracam_get_privdata(tc_dev);
++	int err = 0;
++
++	mutex_lock(&priv->streaming_lock);
++	if(priv->sensor_id == 0)
++		err = imx477_write_table(priv, mode_table[IMX477_MODE_START_STREAM]);
++	else
++		err = imx477_write_table(priv, mode_table[IMX477_MODE_START_STREAM_SLAVE]);
++	if (err) {
++		mutex_unlock(&priv->streaming_lock);
++		return err;
++	}
++	mutex_unlock(&priv->streaming_lock);
++	msleep(20);
++
++	return 0;
++}
++
++static int imx477_stop_streaming(struct tegracam_device *tc_dev)
++{
++	struct imx477 *priv = (struct imx477 *)tegracam_get_privdata(tc_dev);
++	int err;
++
++	mutex_lock(&priv->streaming_lock);
++	err = imx477_write_table(priv, mode_table[IMX477_MODE_STOP_STREAM]);
++	if (err) {
++		mutex_unlock(&priv->streaming_lock);
++		return err;
++	}
++	mutex_unlock(&priv->streaming_lock);
++	return 0;
++}
++
++static struct camera_common_sensor_ops imx477_common_ops = {
++	.numfrmfmts = ARRAY_SIZE(imx477_frmfmt),
++	.frmfmt_table = imx477_frmfmt,
++	.power_on = imx477_power_on,
++	.power_off = imx477_power_off,
++	.write_reg = imx477_write_reg,
++	.read_reg = imx477_read_reg,
++	.parse_dt = imx477_parse_dt,
++	.power_get = imx477_power_get,
++	.power_put = imx477_power_put,
++	.set_mode = imx477_set_mode,
++	.start_streaming = imx477_start_streaming,
++	.stop_streaming = imx477_stop_streaming,
++};
++
++static int imx477_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(sd);
++
++	dev_dbg(&client->dev, "%s:\n", __func__);
++
++	return 0;
++}
++
++static const struct v4l2_subdev_internal_ops imx477_subdev_internal_ops = {
++	.open = imx477_open,
++};
++
++static int imx477_probe(struct i2c_client *client,
++			const struct i2c_device_id *id)
++{
++	struct device *dev = &client->dev;
++	struct device_node *node = dev->of_node;
++	struct tegracam_device *tc_dev;
++	struct imx477 *priv;
++	int err;
++
++	dev_info(dev, "probing v4l2 sensor.\n");
++
++	if (!IS_ENABLED(CONFIG_OF) || !node)
++		return -EINVAL;
++
++	priv = devm_kzalloc(dev, sizeof(struct imx477), GFP_KERNEL);
++	if (!priv) {
++		dev_err(dev, "unable to allocate memory!\n");
++		return -ENOMEM;
++	}
++	tc_dev = devm_kzalloc(dev,
++			sizeof(struct tegracam_device), GFP_KERNEL);
++	if (!tc_dev)
++		return -ENOMEM;
++
++	priv->i2c_client = tc_dev->client = client;
++	tc_dev->dev = dev;
++	strncpy(tc_dev->name, "imx477", sizeof(tc_dev->name));
++	tc_dev->dev_regmap_config = &sensor_regmap_config;
++	tc_dev->sensor_ops = &imx477_common_ops;
++	tc_dev->v4l2sd_internal_ops = &imx477_subdev_internal_ops;
++	tc_dev->tcctrl_ops = &imx477_ctrl_ops;
++	mutex_init(&priv->streaming_lock);
++
++	err = tegracam_device_register(tc_dev);
++	if (err) {
++		dev_err(dev, "tegra camera driver registration failed\n");
++		return err;
++	}
++	priv->tc_dev = tc_dev;
++	priv->s_data = tc_dev->s_data;
++	priv->subdev = &tc_dev->s_data->subdev;
++	imx477_device_id(dev, priv);
++	tegracam_set_privdata(tc_dev, (void *)priv);
++
++	err = tegracam_v4l2subdev_register(tc_dev, true);
++	if (err) {
++		dev_err(dev, "tegra camera subdev registration failed\n");
++		return err;
++	}
++
++	
++	dev_info(&client->dev, "Detected IMX477 sensor\n");
++
++	return 0;
++}
++
++static int imx477_remove(struct i2c_client *client)
++{
++	struct camera_common_data *s_data = to_camera_common_data(&client->dev);
++	struct imx477 *priv = (struct imx477 *)s_data->priv;
++
++	tegracam_v4l2subdev_unregister(priv->tc_dev);
++	tegracam_device_unregister(priv->tc_dev);
++	mutex_destroy(&priv->streaming_lock);
++
++	return 0;
++}
++
++static const struct i2c_device_id imx477_id[] = {
++	{ "imx477", 0 },
++	{ }
++};
++
++MODULE_DEVICE_TABLE(i2c, imx477_id);
++
++static struct i2c_driver imx477_i2c_driver = {
++	.driver = {
++		.name = "imx477",
++		.owner = THIS_MODULE,
++		.of_match_table = of_match_ptr(imx477_of_match),
++	},
++	.probe = imx477_probe,
++	.remove = imx477_remove,
++	.id_table = imx477_id,
++};
++
++static int __init imx477_init(void)
++{
++	return i2c_add_driver(&imx477_i2c_driver);
++}
++
++static void __exit imx477_exit(void)
++{
++	i2c_del_driver(&imx477_i2c_driver);
++}
++
++module_init(imx477_init);
++module_exit(imx477_exit);
++
++MODULE_DESCRIPTION("Media Controller driver for Sony IMX477");
++MODULE_AUTHOR("Guoxin Wu <guoxinw@leopardimaging.com");
++MODULE_LICENSE("GPL v2");
+diff -Nuar kernel_original/nvidia/drivers/media/i2c/imx477_mode_tbls.h kernel/nvidia/drivers/media/i2c/imx477_mode_tbls.h
+--- kernel_original/nvidia/drivers/media/i2c/imx477_mode_tbls.h	1970-01-01 08:00:00.000000000 +0800
++++ kernel/nvidia/drivers/media/i2c/imx477_mode_tbls.h	2020-02-15 10:24:48.351984629 +0800
+@@ -0,0 +1,863 @@
++/*
++ * imx477.c - imx477 sensor driver
++ *
++ * Copyright (c) 2016-2018, NVIDIA CORPORATION, All Rights Reserved.
++ *
++ * Copyright (c) 2016-2019, Guoxin Wu <guoxinw@leopardimaging.com>.
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms and conditions of the GNU General Public License,
++ * version 2, as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef __IMX477_I2C_TABLES__
++#define __IMX477_I2C_TABLES__
++
++#include <media/camera_common.h>
++
++
++#define IMX477_TABLE_WAIT_MS 0
++#define IMX477_TABLE_END 1
++#define IMX477_WAIT_MS 1
++#define IMX477_STANDBY_REG 0x0100
++
++#define imx477_reg struct reg_8
++
++static const imx477_reg imx477_start_slave[] = {
++#if 0
++    {0x3F0B,0x01},
++    {0x3041,0x00},
++    {0x3040,0x00},//XVS input
++    {0x4B81,0x00},//xvs out disable
++#else // 577
++    {0x3F0B,0x00},
++    {0x3DAE,0x00},
++    {0x3DAF,0x00},
++    {0x3040,0x00},//XVS input
++    {0x4B81,0x00},//xvs out disable
++    {0x3041,0x00},//master_slave_sel
++#endif
++	{IMX477_STANDBY_REG, 0x1},
++	{IMX477_TABLE_END, 0x00}
++};
++
++static const imx477_reg imx477_start[] = {
++#if 0
++    {0x3F0B,0x01},
++    {0x3041,0x01},
++    {0x3040,0x01},
++    {0x4B81,0x01},
++#else //577
++    {0x3041,0x01},
++    {0x3DAC,0x01},
++    {0x3DAD,0x00},
++    #if 1 // xvs signal
++    {0x42A8,0xFF},//TESTMNT0, fstrobe's signal by MNTTEST1_SEL
++    {0x42A9,0xFE},//TESTMNT1, xvs's signal by MNTTEST2_SEL
++    {0x42AA,0xFD},//TESTMNT2, gpo's signal by MNTTEST3_SEL
++    // MNTTEST2_SEL=22d, vsync is selected
++    {0x4BD4,0x00}, 
++    {0x4BD5,0x16},
++    //MNTTEST3_SEL=22d,vsync is selected
++    {0x4BDC,0x00}, 
++    {0x4BDD,0x16},
++    //MNTTEST3_SEL=21d,hsync is selected
++    //{0x4BDC,0x00}, 
++    //{0x4BDD,0x15},
++    //#else //V-SYNC signal
++    {0x42B0,0x00},//CKTESTSEL, monitor select
++    {0x42A9,0xFF},//TESTMNT1, xvs's signal
++    {0x42AA,0xFF},//TESTMNT2, gpo's signal by MNTTEST3_SEL
++    // MNTTEST1_SEL=22d, vsync is selected
++    {0x4BD6,0x00}, 
++    {0x4BD7,0x16},
++    {0x4289,0x00},//OUTIF1, xvs pin IO ctrl
++    {0x4F0D,0x07},//vsync pulse width
++    #endif
++
++    {0x3040,0x01},//xvs io ctrl,output
++    {0x4B81,0x01},//xvs out enable
++    {0x4B82,0x07},//XVS pulse width
++    {0x4B83,0x01},//XVS low active
++    //{0x4B83,0x00},//XVS high active
++    {0x4270,0x00},//gpiosel
++    {0x42B0,0x00},//CKTESTSEL, monitor select
++#endif
++	{IMX477_STANDBY_REG, 0x1},
++	{IMX477_TABLE_END, 0x00}
++};
++
++static const imx477_reg imx477_stop_slave[] = {
++	{IMX477_STANDBY_REG, 0x0},
++	{IMX477_TABLE_END, 0x00}
++};
++
++static const imx477_reg imx477_stop[] = {
++	{IMX477_STANDBY_REG, 0x0},
++	{IMX477_TABLE_END, 0x00}
++};
++
++static const imx477_reg global_setting[] = {
++	{IMX477_TABLE_WAIT_MS, IMX477_WAIT_MS},
++	{0x0136,0x18},
++	{0x0137,0x00},
++
++	{0x0808,0x02},
++	{0xE07A,0x01},
++	{0xE000,0x00},
++	{0x4AE9,0x18},
++	{0x4AEA,0x08},
++	{0xF61C,0x04},
++	{0xF61E,0x04},
++	{0x4AE9,0x21},
++	{0x4AEA,0x80},
++	{0x38A8,0x1F},
++	{0x38A9,0xFF},
++	{0x38AA,0x1F},
++	{0x38AB,0xFF},
++	{0x420B,0x01},
++	{0x55D4,0x00},
++	{0x55D5,0x00},
++	{0x55D6,0x07},
++	{0x55D7,0xFF},
++	{0x55E8,0x07},
++	{0x55E9,0xFF},
++	{0x55EA,0x00},
++	{0x55EB,0x00},
++	{0x574C,0x07},
++	{0x574D,0xFF},
++	{0x574E,0x00},
++	{0x574F,0x00},
++	{0x5754,0x00},
++	{0x5755,0x00},
++	{0x5756,0x07},
++	{0x5757,0xFF},
++	{0x5973,0x04},
++	{0x5974,0x01},
++	{0x5D13,0xC3},
++	{0x5D14,0x58},
++	{0x5D15,0xA3},
++	{0x5D16,0x1D},
++	{0x5D17,0x65},
++	{0x5D18,0x8C},
++	{0x5D1A,0x06},
++	{0x5D1B,0xA9},
++	{0x5D1C,0x45},
++	{0x5D1D,0x3A},
++	{0x5D1E,0xAB},
++	{0x5D1F,0x15},
++	{0x5D21,0x0E},
++	{0x5D22,0x52},
++	{0x5D23,0xAA},
++	{0x5D24,0x7D},
++	{0x5D25,0x57},
++	{0x5D26,0xA8},
++	{0x5D37,0x5A},
++	{0x5D38,0x5A},
++	{0x5D77,0x7F},
++	{0x7B7C,0x00},
++	{0x7B7D,0x00},
++	{0x8D1F,0x00},
++	{0x8D27,0x00},
++	{0x9004,0x03},
++	{0x9200,0x50},
++	{0x9201,0x6C},
++	{0x9202,0x71},
++	{0x9203,0x00},
++	{0x9204,0x71},
++	{0x9205,0x01},
++	{0x9371,0x6A},
++	{0x9373,0x6A},
++	{0x9375,0x64},
++	{0x990C,0x00},
++	{0x990D,0x08},
++	{0x9956,0x8C},
++	{0x9957,0x64},
++	{0x9958,0x50},
++	{0x9A48,0x06},
++	{0x9A49,0x06},
++	{0x9A4A,0x06},
++	{0x9A4B,0x06},
++	{0x9A4C,0x06},
++	{0x9A4D,0x06},
++	{0xA001,0x0A},
++	{0xA003,0x0A},
++	{0xA005,0x0A},
++	{0xA006,0x01},
++	{0xA007,0xC0},
++	{0xA009,0xC0},
++	{0x4bd5, 22},
++	{0x4bdd, 21},
++	{0x42b0, 0x0},
++	{0x42a9, 0xfe},
++	{0x42aa, 0xfd},
++	#if 1
++	{0x4270, 0x0},
++	{0x3040, 0x1},
++    #else // pre-shutter
++    {0x3F0B,0x01},
++    {0x0202,0x03},//coarse time
++    {0x0203,0xe8},
++    {0x3F3A,0x03},//prsh_length_lines
++    {0x3F3B,0xFE},
++    {0x0350,0x01},
++    #endif
++
++	{IMX477_TABLE_END, 0x0000}
++};
++
++static const imx477_reg image_qualitys[] = {
++
++	{0x3D8A,0x01},
++	{0x7B3B,0x01},
++	{0x7B4C,0x00},
++	{0x9905,0x00},
++	{0x9907,0x00},
++	{0x9909,0x00},
++
++	{0x990B,0x00},
++	{0x9944,0x3C},
++	{0x9947,0x3C},
++	{0x994A,0x8C},
++	{0x994B,0x50},
++	{0x994C,0x1B},
++	{0x994D,0x8C},
++	{0x994E,0x50},
++	{0x994F,0x1B},
++	{0x9950,0x8C},
++	{0x9951,0x1B},
++	{0x9952,0x0A},
++	{0x9953,0x8C},
++	{0x9954,0x1B},
++	{0x9955,0x0A},
++	{0x9A13,0x04},
++	{0x9A14,0x04},
++	{0x9A19,0x00},
++	{0x9A1C,0x04},
++	{0x9A1D,0x04},
++	{0x9A26,0x05},
++	{0x9A27,0x05},
++	{0x9A2C,0x01},
++	{0x9A2D,0x03},
++	{0x9A2F,0x05},
++	{0x9A30,0x05},
++	{0x9A41,0x00},
++	{0x9A46,0x00},
++	{0x9A47,0x00},
++	{0x9C17,0x35},
++	{0x9C1D,0x31},
++	{0x9C29,0x50},
++	{0x9C3B,0x2F},
++	{0x9C41,0x6B},
++	{0x9C47,0x2D},
++	{0x9C4D,0x40},
++	{0x9C6B,0x00},
++	{0x9C71,0xC8},
++	{0x9C73,0x32},
++	{0x9C75,0x04},
++	{0x9C7D,0x2D},
++	{0x9C83,0x40},
++	{0x9C94,0x3F},
++	{0x9C95,0x3F},
++	{0x9C96,0x3F},
++	{0x9C97,0x00},
++	{0x9C98,0x00},
++	{0x9C99,0x00},
++	{0x9C9A,0x3F},
++	{0x9C9B,0x3F},
++	{0x9C9C,0x3F},
++	{0x9CA0,0x0F},
++	{0x9CA1,0x0F},
++	{0x9CA2,0x0F},
++	{0x9CA3,0x00},
++	{0x9CA4,0x00},
++	{0x9CA5,0x00},
++	{0x9CA6,0x1E},
++	{0x9CA7,0x1E},
++	{0x9CA8,0x1E},
++	{0x9CA9,0x00},
++	{0x9CAA,0x00},
++	{0x9CAB,0x00},
++	{0x9CAC,0x09},
++	{0x9CAD,0x09},
++	{0x9CAE,0x09},
++	{0x9CBD,0x50},
++	{0x9CBF,0x50},
++	{0x9CC1,0x50},
++	{0x9CC3,0x40},
++	{0x9CC5,0x40},
++	{0x9CC7,0x40},
++	{0x9CC9,0x0A},
++	{0x9CCB,0x0A},
++	{0x9CCD,0x0A},
++	{0x9D17,0x35},
++	{0x9D1D,0x31},
++	{0x9D29,0x50},
++	{0x9D3B,0x2F},
++	{0x9D41,0x6B},
++	{0x9D47,0x42},
++	{0x9D4D,0x5A},
++	{0x9D6B,0x00},
++	{0x9D71,0xC8},
++	{0x9D73,0x32},
++	{0x9D75,0x04},
++	{0x9D7D,0x42},
++	{0x9D83,0x5A},
++	{0x9D94,0x3F},
++	{0x9D95,0x3F},
++	{0x9D96,0x3F},
++	{0x9D97,0x00},
++	{0x9D98,0x00},
++	{0x9D99,0x00},
++	{0x9D9A,0x3F},
++	{0x9D9B,0x3F},
++	{0x9D9C,0x3F},
++	{0x9D9D,0x1F},
++	{0x9D9E,0x1F},
++	{0x9D9F,0x1F},
++	{0x9DA0,0x0F},
++	{0x9DA1,0x0F},
++	{0x9DA2,0x0F},
++	{0x9DA3,0x00},
++	{0x9DA4,0x00},
++	{0x9DA5,0x00},
++	{0x9DA6,0x1E},
++	{0x9DA7,0x1E},
++	{0x9DA8,0x1E},
++	{0x9DA9,0x00},
++	{0x9DAA,0x00},
++	{0x9DAB,0x00},
++	{0x9DAC,0x09},
++	{0x9DAD,0x09},
++	{0x9DAE,0x09},
++	{0x9DC9,0x0A},
++	{0x9DCB,0x0A},
++	{0x9DCD,0x0A},
++	{0x9E17,0x35},
++	{0x9E1D,0x31},
++	{0x9E29,0x50},
++	{0x9E3B,0x2F},
++	{0x9E41,0x6B},
++	{0x9E47,0x2D},
++	{0x9E4D,0x40},
++	{0x9E6B,0x00},
++	{0x9E71,0xC8},
++	{0x9E73,0x32},
++	{0x9E75,0x04},
++	{0x9E94,0x0F},
++	{0x9E95,0x0F},
++	{0x9E96,0x0F},
++	{0x9E97,0x00},
++	{0x9E98,0x00},
++	{0x9E99,0x00},
++	{0x9EA0,0x0F},
++	{0x9EA1,0x0F},
++	{0x9EA2,0x0F},
++	{0x9EA3,0x00},
++	{0x9EA4,0x00},
++	{0x9EA5,0x00},
++	{0x9EA6,0x3F},
++	{0x9EA7,0x3F},
++	{0x9EA8,0x3F},
++	{0x9EA9,0x00},
++	{0x9EAA,0x00},
++	{0x9EAB,0x00},
++	{0x9EAC,0x09},
++	{0x9EAD,0x09},
++	{0x9EAE,0x09},
++	{0x9EC9,0x0A},
++	{0x9ECB,0x0A},
++	{0x9ECD,0x0A},
++	{0x9F17,0x35},
++	{0x9F1D,0x31},
++	{0x9F29,0x50},
++	{0x9F3B,0x2F},
++	{0x9F41,0x6B},
++	{0x9F47,0x42},
++	{0x9F4D,0x5A},
++	{0x9F6B,0x00},
++	{0x9F71,0xC8},
++	{0x9F73,0x32},
++	{0x9F75,0x04},
++	{0x9F94,0x0F},
++	{0x9F95,0x0F},
++	{0x9F96,0x0F},
++	{0x9F97,0x00},
++	{0x9F98,0x00},
++	{0x9F99,0x00},
++	{0x9F9A,0x2F},
++	{0x9F9B,0x2F},
++	{0x9F9C,0x2F},
++	{0x9F9D,0x00},
++	{0x9F9E,0x00},
++	{0x9F9F,0x00},
++	{0x9FA0,0x0F},
++	{0x9FA1,0x0F},
++	{0x9FA2,0x0F},
++	{0x9FA3,0x00},
++	{0x9FA4,0x00},
++	{0x9FA5,0x00},
++	{0x9FA6,0x1E},
++	{0x9FA7,0x1E},
++	{0x9FA8,0x1E},
++	{0x9FA9,0x00},
++	{0x9FAA,0x00},
++	{0x9FAB,0x00},
++	{0x9FAC,0x09},
++	{0x9FAD,0x09},
++	{0x9FAE,0x09},
++	{0x9FC9,0x0A},
++	{0x9FCB,0x0A},
++	{0x9FCD,0x0A},
++	{0xA14B,0xFF},
++	{0xA151,0x0C},
++	{0xA153,0x50},
++	{0xA155,0x02},
++	{0xA157,0x00},
++	{0xA1AD,0xFF},
++	{0xA1B3,0x0C},
++	{0xA1B5,0x50},
++	{0xA1B9,0x00},
++	{0xA24B,0xFF},
++	{0xA257,0x00},
++	{0xA2AD,0xFF},
++	{0xA2B9,0x00},
++	{0xB21F,0x04},
++	{0xB35C,0x00},
++	{0xB35E,0x08},	
++	{IMX477_TABLE_END, 0x0000}
++};
++
++static const imx477_reg mode_1920X1080_60fps[] = {
++	{0x0112,	0x0A},
++	{0x0113,	0x0A},
++	{0x0114,	0x01},
++
++	{0x0342,	0x23},
++	{0x0343,	0x40},
++	/*MCLK 24MHz */
++	{0x0340,	0x06},
++	{0x0341,	0x0F},
++	{0x0344,	0x00},
++	{0x0345,	0x00},
++	{0x0346,	0x01},
++	{0x0347,	0x78},
++	{0x0348,	0x0F},
++	{0x0349,	0xD7},
++	{0x034A,	0x0A},
++	{0x034B,	0x67},
++	{0x00E3,	0x00},
++	{0x00E4,	0x00},
++	{0x00FC,	0x0A},
++	{0x00FD,	0x0A},
++	{0x00FE,	0x0A},
++	{0x00FF,	0x0A},
++	{0x0220,	0x00},
++	{0x0221,	0x11},
++	{0x0381,	0x01},
++	{0x0383,	0x01},
++	{0x0385,	0x01},
++	{0x0387,	0x01},
++	{0x0900,	0x01},
++	{0x0901,	0x22},
++	{0x0902,	0x02},
++	{0x3140,	0x02},
++	{0x3C00,	0x00},
++	{0x3C01,	0x01},
++	{0x3C02,	0x9C},
++	{0x3F0D,	0x00},
++	{0x5748,	0x00},
++	{0x5749,	0x00},
++	{0x574A,	0x00},
++	{0x574B,	0xA4},
++	{0x7B75,	0x0E},
++	{0x7B76,	0x09},
++	{0x7B77,	0x08},
++	{0x7B78,	0x06},
++	{0x7B79,	0x34},
++	{0x7B53,	0x00},
++	{0x9369,	0x73},
++	{0x936B,	0x64},
++	{0x936D,	0x5F},
++	{0x9304,	0x03},
++	{0x9305,	0x80},
++	{0x9E9A,	0x2F},
++	{0x9E9B,	0x2F},
++	{0x9E9C,	0x2F},
++	{0x9E9D,	0x00},
++	{0x9E9E,	0x00},
++	{0x9E9F,	0x00},
++	{0xA2A9,	0x27},
++	/*Mode Setting*/
++	{0xA2B7,	0x03},
++	{0x0401,	0x00},
++	{0x0404,	0x00},
++	{0x0405,	0x10},
++	{0x0408,	0x00},
++	{0x0409,	0x36},
++	{0x040A,	0x00},
++	{0x040B,	0x20},
++	{0x040C,	0x07},
++	{0x040D,	0x80},
++	{0x040E,	0x04},
++	{0x040F,	0x38},
++	{0x034C,	0x07},
++	{0x034D,	0x80},
++	{0x034E,	0x04},
++	{0x034F,	0x38},
++	{0x0301,	0x05},
++	{0x0303,	0x02},
++	{0x0305,	0x02},
++	{0x0306,	0x00},
++	{0x0307,	0xAF},
++	{0x0309,	0x0A},
++	{0x030B,	0x01},
++	{0x030D,	0x03},
++	{0x030E,	0x00},
++	{0x030F,	0x96},
++	{0x0310,	0x01},
++	{0x0820,	0x09},
++	{0x0821,	0x60},
++	{0x0822,	0x00},
++	{0x0823,	0x00},
++	{0x080A,	0x00},
++	{0x080B,	0x87},
++	{0x080C,	0x00},
++	{0x080D,	0x4F},
++	{0x080E,	0x00},
++	{0x080F,	0x87},
++	{0x0810,	0x00},
++	{0x0811,	0x5F},
++	{0x0812,	0x00},
++	{0x0813,	0x5F},
++	{0x0814,	0x00},
++	{0x0815,	0x4F},
++	{0x0816,	0x01},
++	{0x0817,	0x3F},
++	{0x0818,	0x00},
++	{0x0819,	0x3F},
++	{0xE04C,	0x00},
++	{0xE04D,	0x87},
++	{0xE04E,	0x00},
++	{0xE04F,	0x1F},
++
++	{0x3E20,	0x01},
++	{0x3E37,	0x00},
++
++	{0x3F50,	0x00},
++	{0x3F56,	0x01},
++	{0x3F57,	0x02},
++	{0X3FF9,	0x01},
++
++	{IMX477_TABLE_WAIT_MS, IMX477_WAIT_MS},
++	{IMX477_TABLE_END, 0x0000}
++};
++
++/* Mode 3 : 1920X1080 10 bits 60fps*/
++static const imx477_reg mode_4056X3040_30fps[] = {
++	{0x0112, 0x0A},
++	{0x0113, 0x0A},
++	{0x0114, 0x01},
++	
++	{0x0342, 0x23},
++	{0x0343, 0x40},
++	{0x0340,0x0C},
++	{0x0341,0x1E},
++	{0x0344, 0x00},
++	{0x0345,	0x00},
++	{0x0346,	0x00},
++	{0x0347,	0x00},
++	{0x0348, 0x0F},
++	{0x0349,	0xD7},
++	{0x034A,	0x0B},
++	{0x034B,	0xDF},
++	{0x00E3, 0x00},
++	{0x00E4, 0x00},
++	{0x00FC, 0x0A},
++	{0x00FD, 0x0A},
++	{0x00FE, 0x0A},
++	{0x00FF, 0x0A},
++	{0x0220, 0x00},
++	{0x0221, 0x11},
++	{0x0381, 0x01},
++	{0x0383, 0x01},
++	{0x0385, 0x01},
++	{0x0387, 0x01},
++	{0x0900,	0x00},
++	{0x0901,	0x11},
++	{0x0902, 0x02},
++	{0x3140, 0x02},
++	{0x3C00, 0x00},
++	{0x3C01, 0x01},
++	{0x3C02, 0x9C},
++	{0x3F0D, 0x00},
++	{0x5748, 0x00},
++	{0x5749, 0x00},
++	{0x574A, 0x00},
++	{0x574B, 0xA4},
++	{0x7B75, 0x0E},
++	{0x7B76, 0x09},
++	{0x7B77, 0x08},
++	{0x7B78, 0x06},
++	{0x7B79, 0x34},
++	{0x7B53, 0x00},
++	{0x9369, 0x73},
++	{0x936B, 0x64},
++	{0x936D, 0x5F},
++	{0x9304, 0x03},
++	{0x9305, 0x80},
++	{0x9E9A, 0x2F},
++	{0x9E9B, 0x2F},
++	{0x9E9C, 0x2F},
++	{0x9E9D, 0x00},
++	{0x9E9E, 0x00},
++	{0x9E9F, 0x00},
++	{0xA2A9, 0x27},
++	{0xA2B7, 0x03},
++	{0x0401, 0x00},
++	{0x0404, 0x00},
++	{0x0405, 0x10},
++	{0x0408, 0x00},
++	//{0x0409, 0x00},
++	{0x0409, 0x0C},//offset
++	{0x040A, 0x00},
++	{0x040B, 0x00},
++	{0x040C,	0x0F},
++	//{0x040D,	0xD8},//crop width
++	{0x040D,	0xC0},
++	{0x040E,	0x0B},
++	{0x040F,	0xE0},
++	{0x034C,	0x0F},
++	//{0x034D,	0xD8},//x_out_size
++	{0x034D,	0xC0},
++	{0x034E,	0x0B},
++	{0x034F,	0xE0},
++	{0x0301, 0x05},
++	{0x0303, 0x02},
++	{0x0305, 0x02},
++	{0x0306, 0x00},
++	{0x0307, 0xAF},
++	{0x0309, 0x0A},
++	{0x030B, 0x01},
++	{0x030D, 0x03},
++	{0x030E, 0x01},
++	{0x030F, 0x06},
++	{0x0310, 0x01},
++	{0x0820, 0x20},
++	{0x0821, 0xC0},
++	{0x0822, 0x00},
++	{0x0823, 0x00},
++	{0x080A, 0x00},
++	{0x080B, 0xC7},
++	{0x080C, 0x00},
++	{0x080D, 0x87},
++	{0x080E, 0x00},
++	{0x080F, 0xDF},
++	{0x0810, 0x00},
++	{0x0811, 0x97},
++	{0x0812, 0x00},
++	{0x0813, 0x8F},
++	{0x0814, 0x00},
++	{0x0815, 0x7F},
++	{0x0816, 0x02},
++	{0x0817, 0x27},
++	{0x0818, 0x00},
++	{0x0819, 0x6F},
++	{0xE04C, 0x00},
++	{0xE04D, 0xDF},
++	{0xE04E, 0x00},
++	{0xE04F, 0x1F},
++	{0x3E20, 0x01},
++	{0x3E37, 0x00},
++	{0x3F50, 0x00},
++	{0x3F56, 0x00},
++	{0x3F57, 0x56},
++
++	{0X3FF9,	0x01},
++	{IMX477_TABLE_WAIT_MS, IMX477_WAIT_MS},
++	{IMX477_TABLE_END, 0x0000}
++};
++
++/* Mode 5 : 1288X546 10 bits 240fps*/
++static const imx477_reg mode_2028X1520_60fps[] = {
++	{0x0112,	0x0A},
++	{0x0113,	0x0A},
++	{0x0114,	0x01},
++
++	{0x0342,	0x19},
++	{0x0343,	0x7C},
++	/* input freq. 24M */
++	{0x0340,	0x10},
++	{0x0341,	0xC3},
++	{0x0344,	0x00},
++	{0x0345,	0x00},
++	{0x0346,	0x00},
++	{0x0347,	0x00},
++	{0x0348,	0x0F},
++	{0x0349,	0xD7},
++	{0x034A,	0x0B},
++	{0x034B,	0xDF},
++
++	{0x00E3,	0x00},
++	{0x00E4,	0x00},
++	{0x00FC,	0x0A},
++	{0x00FD,	0x0A},
++	{0x00FE,	0x0A},
++	{0x00FF,	0x0A},
++	{0x0220,	0x00},
++	{0x0221,	0x11},
++	{0x0381,	0x01},
++	{0x0383,	0x01},
++	{0x0385,	0x01},
++	{0x0387,	0x01},
++	{0x0900,0x01},
++	{0x0901,0x22},
++	{0x0902,	0x02},
++	{0x3140,	0x02},
++	{0x3C00,	0x00},
++	{0x3C01,	0x03},
++	{0x3C02,	0xDC},
++	{0x3F0D,	0x00},
++	{0x5748,	0x07},
++	{0x5749,	0xFF},
++	{0x574A,	0x00},
++	{0x574B,	0x00},
++	{0x7B75,	0x0E},
++	{0x7B76,	0x09},
++	{0x7B77,	0x0C},
++	{0x7B78,	0x06},
++	{0x7B79,	0x3B},
++	{0x7B53,	0x01},
++	{0x9369,	0x5A},
++	{0x936B,	0x55},
++	{0x936D,	0x28},
++	{0x9304,	0x03},
++	{0x9305,	0x00},
++	{0x9E9A,	0x2F},
++	{0x9E9B,	0x2F},
++	{0x9E9C,	0x2F},
++	{0x9E9D,	0x00},
++	{0x9E9E,	0x00},
++	{0x9E9F,	0x00},
++	{0xA2A9,	0x60},
++	{0xA2B7,	0x00},
++	/* resolution */
++	{0x0401,	0x00},
++	{0x0404,	0x00},
++	{0x0405,	0x10},
++	{0x0408,	0x00},
++	{0x0409,	0x00},
++	{0x040A,	0x00},
++	{0x040B,	0x00},
++	{0x040C,0x07},
++	{0x040D,0xEC},
++	{0x040E,0x05},
++	{0x040F,0xF0},
++	{0x034C,0x07},
++	{0x034D,0xEC},
++	{0x034E,0x05},
++	{0x034F,0xF0},
++	/* mode setting */
++	{0x0301,	0x05},
++	{0x0303,	0x02},
++	{0x0305,	0x02},
++	{0x0306,	0x00},
++	{0x0307,	0xAF},
++	{0x0309,	0x0A},
++	{0x030B,	0x01},
++	{0x030D,	0x02},
++	{0x030E,	0x00},
++	{0x030F,	0x74},
++	{0x0310,	0x01},
++	{0x0820,	0x15},
++	{0x0821,	0xC0},
++	{0x0822,	0x00},
++	{0x0823,	0x00},
++	{0x080A,	0x00},
++	{0x080B,	0x8F},
++	{0x080C,	0x00},
++	{0x080D,	0x5F},
++	{0x080E,	0x00},
++	{0x080F,	0x97},
++	{0x0810,	0x00},
++	{0x0811,	0x6F},
++	{0x0812,	0x00},
++	{0x0813,	0x67},
++	{0x0814,	0x00},
++	{0x0815,	0x57},
++	{0x0816,	0x01},
++	{0x0817,	0x77},
++	{0x0818,	0x00},
++	{0x0819,	0x4F},
++	{0xE04C,	0x00},
++	{0xE04D,	0x97},
++	{0xE04E,	0x00},
++	{0xE04F,	0x1F},
++	{0x3E20,	0x01},
++	{0x3E37,	0x00},
++	{0x3F50,	0x00},
++	{0x3F56,	0x00},
++	{0x3F57,	0xBB},
++	{0X3FF9,	0x01},
++	{IMX477_TABLE_WAIT_MS, IMX477_WAIT_MS},
++	{IMX477_TABLE_END, 0x0000}
++};
++
++enum {
++	IMX477_MODE_4056X3040,
++	IMX477_MODE_2028X1520,
++	IMX477_MODE_1920X1080,
++	IMX477_GLOBAL_SETTING,
++	IMX477_IMAGE_QUALITY,
++
++	IMX477_MODE_START_STREAM,
++	IMX477_MODE_STOP_STREAM,
++	IMX477_MODE_START_STREAM_SLAVE,
++	IMX477_MODE_STOP_STREAM_SLAVE,
++};
++
++static const imx477_reg *mode_table[] = {
++	
++	[IMX477_MODE_4056X3040] = mode_4056X3040_30fps,
++	[IMX477_MODE_2028X1520] = mode_2028X1520_60fps,
++	[IMX477_MODE_1920X1080] = mode_1920X1080_60fps,
++	[IMX477_GLOBAL_SETTING] = global_setting,
++	[IMX477_IMAGE_QUALITY] = image_qualitys,
++
++	[IMX477_MODE_START_STREAM]		= imx477_start,
++	[IMX477_MODE_STOP_STREAM]		= imx477_stop,
++	[IMX477_MODE_START_STREAM_SLAVE]
++	= imx477_start_slave,
++	[IMX477_MODE_STOP_STREAM_SLAVE]
++	= imx477_stop_slave,	
++};
++
++
++
++static const int imx477_15_fr[] = {
++	15,
++};
++
++static const int imx477_30_fr[] = {
++	30,
++};
++
++static const int imx477_60_fr[] = {
++	60,
++};
++
++static const struct camera_common_frmfmt imx477_frmfmt[] = {
++	{{4032, 3040}, imx477_30_fr, 1, 0, IMX477_MODE_4056X3040},
++	{{2028, 1520}, imx477_60_fr, 1, 0, IMX477_MODE_2028X1520},
++	{{1920, 1080}, imx477_60_fr, 1, 0, IMX477_MODE_1920X1080},
++};
++#endif  /* __IMX477_I2C_TABLES__ */
++
+diff -Nuar kernel_original/nvidia/drivers/media/i2c/imx577.c kernel/nvidia/drivers/media/i2c/imx577.c
+--- kernel_original/nvidia/drivers/media/i2c/imx577.c	1970-01-01 08:00:00.000000000 +0800
++++ kernel/nvidia/drivers/media/i2c/imx577.c	2020-02-15 10:21:44.120906966 +0800
+@@ -0,0 +1,683 @@
++/*
++ * imx477.c - imx477 sensor driver
++ *
++ * Copyright (c) 2018-2019, NVIDIA CORPORATION.  All rights reserved.
++ *
++ * Copyright (c) 2016-2019, Guoxin Wu <guoxinw@leopardimaging.com>.
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms and conditions of the GNU General Public License,
++ * version 2, as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#define DEBUG 1
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/gpio.h>
++#include <linux/module.h>
++
++#include <linux/seq_file.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/of_gpio.h>
++
++
++#include <media/tegracam_core.h>
++#include <media/imx477.h>
++#include "imx477_mode_tbls.h"
++
++#define IMX477_GAIN_SHIFT		8
++#define IMX477_GAIN_REG_MAX			(978)
++#define IMX477_MAX_DIGITAL_GAIN			(16)
++#define IMX477_MAX_ANALOG_GAIN			(22)
++#define IMX477_GAIN_CONST			(1024) /* for gain formula */
++#define IMX477_MIN_GAIN		(1)
++#define IMX477_MAX_GAIN		(354)
++#define IMX477_DEFAULT_GAIN		IMX477_MIN_GAIN
++#define IMX477_DEFAULT_FRAME_LENGTH    (1551)
++#define IMX477_MAX_FRAME_LENGTH    (0xB292)
++#define IMX477_MASK_LSB_2_BITS			(0x03)
++#define IMX477_MASK_LSB_8_BITS			(0x00ff)
++
++#define IMX477_ANALOG_GAIN_ADDR_LSB		0x0205 /* ANALOG GAIN LSB */
++#define IMX477_ANALOG_GAIN_ADDR_MSB		0x0204 /* ANALOG GAIN MSB */
++#define IMX477_DIGITAL_GAIN_REG_LOW		0x020F /* Digital Gain */
++#define IMX477_DIGITAL_GAIN_REG_HIG		0x020E /* Digital Gain */
++
++#define FPGA_FRAME_RATE_REG      0x01
++extern int fpga_config_write_reg(u8 addr, u16 val);
++
++const struct of_device_id imx477_of_match[] = {
++	{ .compatible = "nvidia,imx477",},
++	{ },
++};
++MODULE_DEVICE_TABLE(of, imx477_of_match);
++
++static const u32 ctrl_cid_list[] = {
++	TEGRA_CAMERA_CID_GAIN,
++	TEGRA_CAMERA_CID_EXPOSURE,
++	TEGRA_CAMERA_CID_EXPOSURE_SHORT,
++	TEGRA_CAMERA_CID_FRAME_RATE,
++	TEGRA_CAMERA_CID_HDR_EN,
++};
++
++struct imx477 {
++	struct i2c_client	*i2c_client;
++	const struct i2c_device_id *id;
++	struct v4l2_subdev	*subdev;
++	struct mutex			streaming_lock;
++	u32	frame_length;
++	u32 	sensor_id;
++	u32				fpga_index;
++	struct camera_common_data	*s_data;
++	struct tegracam_device		*tc_dev;
++};
++
++static const struct regmap_config sensor_regmap_config = {
++	.reg_bits = 16,
++	.val_bits = 8,
++	.cache_type = REGCACHE_RBTREE,
++};
++
++static inline void imx477_get_frame_length_regs(imx477_reg *regs,
++				u32 frame_length)
++{
++	regs->addr = IMX477_VMAX_ADDR_MSB;
++	regs->val = (frame_length >> 8) & 0xff;
++
++	(regs + 1)->addr = IMX477_VMAX_ADDR_LSB;
++	(regs + 1)->val = (frame_length) & 0xff;
++}
++
++static inline void imx477_get_coarse_time_regs(imx477_reg *regs,
++				u32 coarse_time)
++{
++	regs->addr = IMX477_SHR_ADDR_MSB;
++	regs->val = (coarse_time >> 8) & 0xff;
++
++	(regs + 1)->addr = IMX477_SHR_ADDR_LSB;
++	(regs + 1)->val = coarse_time & 0xff;
++}
++
++
++static inline void imx477_calculate_gain_regs(imx477_reg *regs,
++				u16 gain)
++{
++	regs->addr = IMX477_ANALOG_GAIN_ADDR_MSB;
++	regs->val = (gain >> 8) & IMX477_MASK_LSB_2_BITS;
++	(regs + 1)->addr = IMX477_ANALOG_GAIN_ADDR_LSB;
++	(regs + 1)->val = gain & 0xff;
++}
++
++static int test_mode;
++module_param(test_mode, int, 0644);
++
++static inline int imx477_read_reg(struct camera_common_data *s_data,
++				u16 addr, u8 *val)
++{
++	int err = 0;
++	u32 reg_val = 0;
++
++	err = regmap_read(s_data->regmap, addr, &reg_val);
++	*val = reg_val & 0xFF;
++
++	return err;
++}
++
++static int imx477_write_reg(struct camera_common_data *s_data,
++				u16 addr, u8 val)
++{
++	int err;
++	struct device *dev = s_data->dev;
++
++	err = regmap_write(s_data->regmap, addr, val);
++	if (err)
++		dev_err(dev, "%s:i2c write failed, 0x%x = %x\n",
++			__func__, addr, val);
++
++	return err;
++}
++
++static int imx477_write_table(struct imx477 *priv,
++				const imx477_reg table[])
++{
++	struct camera_common_data *s_data = priv->s_data;
++	return regmap_util_write_table_8(s_data->regmap,
++					 table,
++					 NULL, 0,
++					 IMX477_TABLE_WAIT_MS,
++					 IMX477_TABLE_END);
++}
++
++static int imx477_power_on(struct camera_common_data *s_data)
++{
++	int err = 0;
++	struct camera_common_power_rail *pw = s_data->power;
++	struct camera_common_pdata *pdata = s_data->pdata;
++	struct device *dev = s_data->dev;
++
++	dev_dbg(dev, "%s: power on\n", __func__);
++	if (pdata && pdata->power_on) {
++		err = pdata->power_on(pw);
++		if (err)
++			dev_err(dev, "%s failed.\n", __func__);
++		else
++			pw->state = SWITCH_ON;
++		return err;
++	}
++
++	pw->state = SWITCH_ON;
++
++	return 0;
++}
++
++static int imx477_power_off(struct camera_common_data *s_data)
++{
++	int err = 0;
++	struct camera_common_power_rail *pw = s_data->power;
++	struct camera_common_pdata *pdata = s_data->pdata;
++	struct device *dev = s_data->dev;
++
++	dev_dbg(dev, "%s:\n", __func__);
++
++	if (pdata && pdata->power_off) {
++		err = pdata->power_off(pw);
++		if (!err)
++			goto power_off_done;
++		else
++			dev_err(dev, "%s failed.\n", __func__);
++		return err;
++	}
++
++power_off_done:
++	pw->state = SWITCH_OFF;
++
++	return 0;
++}
++
++static int imx477_power_get(struct tegracam_device *tc_dev)
++{
++	struct device *dev = tc_dev->dev;
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct camera_common_power_rail *pw = s_data->power;
++	struct camera_common_pdata *pdata = s_data->pdata;
++	const char *mclk_name;
++	const char *parentclk_name;
++	struct clk *parent;
++	int err = 0;
++
++	mclk_name = pdata->mclk_name ?
++		    pdata->mclk_name : "cam_mclk1";
++	pw->mclk = devm_clk_get(dev, mclk_name);
++	if (IS_ERR(pw->mclk)) {
++		dev_err(dev, "unable to get clock %s\n", mclk_name);
++		return PTR_ERR(pw->mclk);
++	}
++
++	parentclk_name = pdata->parentclk_name;
++	if (parentclk_name) {
++		parent = devm_clk_get(dev, parentclk_name);
++		if (IS_ERR(parent)) {
++			dev_err(dev, "unable to get parent clcok %s",
++				parentclk_name);
++		} else
++			clk_set_parent(pw->mclk, parent);
++	}
++
++	pw->state = SWITCH_OFF;
++
++	return err;
++}
++
++static int imx477_power_put(struct tegracam_device *tc_dev)
++{
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct camera_common_power_rail *pw = s_data->power;
++
++	if (unlikely(!pw))
++		return -EFAULT;
++
++	return 0;
++}
++
++static int imx477_set_group_hold(struct tegracam_device *tc_dev, bool val)
++{
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct device *dev = tc_dev->dev;
++	int err;
++
++    return 0;
++	err = imx477_write_reg(s_data,
++			       IMX477_GROUP_HOLD_ADDR, val);
++	if (err) {
++		dev_dbg(dev,
++			"%s: Group hold control error\n", __func__);
++		return err;
++	}
++
++	return 0;
++}
++
++static int imx477_set_digital_gain(struct camera_common_data *s_data, u32 dgain)
++{
++	int ret;
++
++
++
++	ret = imx477_write_reg(s_data, IMX477_DIGITAL_GAIN_REG_LOW,
++			       dgain & IMX477_MASK_LSB_8_BITS);
++	ret |= imx477_write_reg(s_data, IMX477_DIGITAL_GAIN_REG_HIG,
++			       (dgain >> 8) & IMX477_MASK_LSB_8_BITS);
++	return ret;
++}
++
++static int imx477_set_gain(struct tegracam_device *tc_dev, s64 val)
++{
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct device *dev = tc_dev->dev;
++	const struct sensor_mode_properties *mode =
++		&s_data->sensor_props.sensor_modes[s_data->mode_prop_idx];
++	imx477_reg reg_list[2];
++	int err, i;
++	u32 gain, analog_gain, digital_gain, gain_reg;
++
++	gain = (u32)(val * 256 / mode->control_properties.gain_factor);
++	if (gain > IMX477_MAX_DIGITAL_GAIN * IMX477_MAX_ANALOG_GAIN * 256)
++		gain = IMX477_MAX_DIGITAL_GAIN * IMX477_MAX_ANALOG_GAIN * 256;
++	else if (gain < IMX477_MIN_GAIN * 256)
++		gain = IMX477_MIN_GAIN * 256;
++
++	if(gain > (IMX477_MAX_ANALOG_GAIN << IMX477_GAIN_SHIFT)) {
++		analog_gain = IMX477_MAX_ANALOG_GAIN << IMX477_GAIN_SHIFT;
++		digital_gain = gain / IMX477_MAX_ANALOG_GAIN;
++	} else {
++		analog_gain = gain;
++		digital_gain = 256;
++	}
++	
++
++	dev_dbg(dev, "%s :val = %lld, digital gain = %d, analog gain = %d\n",
++		 __func__, val,digital_gain, analog_gain);
++
++	err = imx477_set_digital_gain(s_data, digital_gain);
++	if (err)
++		goto fail;
++
++	/* convert to register value, refer to imx477 datasheet */
++	gain_reg = IMX477_GAIN_CONST - ((u32)IMX477_GAIN_CONST << IMX477_GAIN_SHIFT) / analog_gain;
++
++	if (gain_reg > IMX477_GAIN_REG_MAX)
++		gain_reg = IMX477_GAIN_REG_MAX;
++
++	imx477_calculate_gain_regs(reg_list, (u16)gain_reg);
++
++	for (i = 0; i < ARRAY_SIZE(reg_list); i++) {
++		err = imx477_write_reg(s_data, reg_list[i].addr,
++			 reg_list[i].val);
++		if (err)
++			goto fail;
++	}
++	return 0;
++
++fail:
++	dev_info(dev, "%s: GAIN control error\n", __func__);
++	return err;
++}
++
++static int imx477_set_frame_rate(struct tegracam_device *tc_dev, s64 val)
++{
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct imx477 *priv = (struct imx477 *)tc_dev->priv;
++	struct device *dev = tc_dev->dev;
++	imx477_reg reg_list[2];
++	int err;
++	u32 frame_length;
++	u16 frame_rate;
++	const struct sensor_mode_properties *mode =
++		&s_data->sensor_props.sensor_modes[s_data->mode_prop_idx];
++	int i = 0;
++
++	frame_length = mode->signal_properties.pixel_clock.val *
++		mode->control_properties.framerate_factor /
++		mode->image_properties.line_length / val;
++
++	
++	priv->frame_length = frame_length;
++	if (priv->frame_length > IMX477_MAX_FRAME_LENGTH)
++		priv->frame_length = IMX477_MAX_FRAME_LENGTH;
++
++    frame_rate = (u16)(mode->signal_properties.pixel_clock.val / 
++            mode->image_properties.line_length / frame_length);
++    //printk("frame rate:%d\n",frame_rate);
++    frame_rate = (u16)(val / 100000);
++    fpga_config_write_reg(FPGA_FRAME_RATE_REG, frame_rate);		
++	usleep_range(1000, 1010);
++
++	dev_dbg(dev, "%s: val: %lld, frame_length: %d,frame rate: %d\n", __func__,
++         val, priv->frame_length, frame_rate);
++
++	imx477_get_frame_length_regs(reg_list, priv->frame_length);
++
++	for (i = 0; i < 2; i++) {
++		err = imx477_write_reg(priv->s_data, reg_list[i].addr,
++			 reg_list[i].val);
++		if (err)
++			goto fail;
++	}
++
++	return 0;
++
++fail:
++	dev_dbg(dev, "%s: FRAME_LENGTH control error\n", __func__);
++	return err;	
++}
++
++static int imx477_set_exposure(struct tegracam_device *tc_dev, s64 val)
++{
++	struct imx477 *priv = (struct imx477 *)tegracam_get_privdata(tc_dev);
++	struct camera_common_data *s_data = tc_dev->s_data;
++	const struct sensor_mode_properties *mode =
++		&s_data->sensor_props.sensor_modes[s_data->mode];
++	imx477_reg reg_list[2];
++	int err;
++	u32 coarse_time;
++	int i = 0;
++
++	if (priv->frame_length == 0)
++		priv->frame_length = IMX477_DEFAULT_FRAME_LENGTH;
++
++	/* coarse time in lines */
++	coarse_time = (u32) (val * s_data->frmfmt[s_data->mode].framerates[0] *
++		priv->frame_length / mode->control_properties.exposure_factor);
++
++    if(coarse_time > priv->frame_length -20)
++         coarse_time = priv->frame_length -20;
++	dev_dbg(&priv->i2c_client->dev,
++		"%s: coarse time val:%d\n", __func__,coarse_time);
++
++	imx477_get_coarse_time_regs(reg_list, coarse_time);
++	for (i = 0; i < 2; i++) {
++		err = imx477_write_reg(priv->s_data, reg_list[i].addr,
++			reg_list[i].val);
++		if (err)
++			goto fail;
++	}
++
++	return 0;
++
++fail:
++	dev_dbg(&priv->i2c_client->dev,
++		"%s: set coarse time error\n", __func__);
++	return err;
++}
++
++static struct tegracam_ctrl_ops imx477_ctrl_ops = {
++	.numctrls = ARRAY_SIZE(ctrl_cid_list),
++	.ctrl_cid_list = ctrl_cid_list,
++	.set_gain = imx477_set_gain,
++	.set_exposure = imx477_set_exposure,
++	.set_exposure_short = imx477_set_exposure,
++	.set_frame_rate = imx477_set_frame_rate,
++	.set_group_hold = imx477_set_group_hold,
++};
++
++static struct camera_common_pdata *imx477_parse_dt(struct tegracam_device *tc_dev)
++{
++	struct device *dev = tc_dev->dev;
++	struct device_node *node = dev->of_node;
++	struct camera_common_pdata *board_priv_pdata;
++	const struct of_device_id *match;
++	int err;
++
++	if (!node)
++		return NULL;
++
++	match = of_match_device(imx477_of_match, dev);
++	if (!match) {
++		dev_err(dev, "Failed to find matching dt id\n");
++		return NULL;
++	}
++
++	board_priv_pdata = devm_kzalloc(dev, sizeof(*board_priv_pdata), GFP_KERNEL);
++
++	err = of_property_read_string(node, "mclk",
++				      &board_priv_pdata->mclk_name);
++	if (err)
++		dev_err(dev, "mclk not in DT\n");
++
++	return board_priv_pdata;
++}
++
++
++static int  imx477_device_id(struct device *dev,
++                                struct imx477 *priv)
++{
++	struct device_node *np = dev->of_node;
++	const struct of_device_id *match;
++	int err;
++	const char *str;
++
++	match = of_match_device(imx477_of_match, dev);
++	if (!match) {
++	        dev_err(dev, "Failed to find matching dt id\n");
++	        return -1;
++	}
++	err = of_property_read_string(np, "sensor_operation_mode", &str);
++	if (!err) {
++	    if (!strcmp(str, "master"))
++	    	priv->sensor_id = 0;
++	    else if(!strcmp(str, "slave"))
++	    	priv->sensor_id = 1;
++	}
++	else
++	    dev_err(dev, "Failed to find sensor_operation_mode \n");
++
++	return priv->sensor_id;
++
++}
++
++static int imx477_set_mode(struct tegracam_device *tc_dev)
++{
++	struct imx477 *priv = (struct imx477 *)tegracam_get_privdata(tc_dev);
++	struct camera_common_data *s_data = tc_dev->s_data;
++	struct device *dev = tc_dev->dev;
++	const struct of_device_id *match;
++	int err = 0;
++
++	match = of_match_device(imx477_of_match, dev);
++	if (!match) {
++		dev_err(dev, "Failed to find matching dt id\n");
++		return -EINVAL;
++	}
++
++	mutex_lock(&priv->streaming_lock);
++	err = imx477_write_table(priv, mode_table[IMX477_GLOBAL_SETTING]);
++	err |= imx477_write_table(priv, mode_table[IMX477_IMAGE_QUALITY]);
++	err |= imx477_write_table(priv, mode_table[IMX477_MODE_STOP_STREAM]);
++
++	err |= imx477_write_table(priv, mode_table[s_data->mode_prop_idx]);
++	if (err) {
++		mutex_unlock(&priv->streaming_lock);
++		return err;
++	}
++	mutex_unlock(&priv->streaming_lock);
++	
++	return 0;
++}
++
++static int imx477_start_streaming(struct tegracam_device *tc_dev)
++{
++	struct imx477 *priv = (struct imx477 *)tegracam_get_privdata(tc_dev);
++	int err = 0;
++
++	mutex_lock(&priv->streaming_lock);
++	if(priv->sensor_id == 0)
++		err = imx477_write_table(priv, mode_table[IMX477_MODE_START_STREAM]);
++	else
++		err = imx477_write_table(priv, mode_table[IMX477_MODE_START_STREAM_SLAVE]);
++	if (err) {
++		mutex_unlock(&priv->streaming_lock);
++		return err;
++	}
++	mutex_unlock(&priv->streaming_lock);
++	msleep(20);
++
++	return 0;
++}
++
++static int imx477_stop_streaming(struct tegracam_device *tc_dev)
++{
++	struct imx477 *priv = (struct imx477 *)tegracam_get_privdata(tc_dev);
++	int err;
++
++	mutex_lock(&priv->streaming_lock);
++	err = imx477_write_table(priv, mode_table[IMX477_MODE_STOP_STREAM]);
++	if (err) {
++		mutex_unlock(&priv->streaming_lock);
++		return err;
++	}
++	mutex_unlock(&priv->streaming_lock);
++	return 0;
++}
++
++static struct camera_common_sensor_ops imx477_common_ops = {
++	.numfrmfmts = ARRAY_SIZE(imx477_frmfmt),
++	.frmfmt_table = imx477_frmfmt,
++	.power_on = imx477_power_on,
++	.power_off = imx477_power_off,
++	.write_reg = imx477_write_reg,
++	.read_reg = imx477_read_reg,
++	.parse_dt = imx477_parse_dt,
++	.power_get = imx477_power_get,
++	.power_put = imx477_power_put,
++	.set_mode = imx477_set_mode,
++	.start_streaming = imx477_start_streaming,
++	.stop_streaming = imx477_stop_streaming,
++};
++
++static int imx477_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
++{
++	struct i2c_client *client = v4l2_get_subdevdata(sd);
++
++	dev_dbg(&client->dev, "%s:\n", __func__);
++
++	return 0;
++}
++
++static const struct v4l2_subdev_internal_ops imx477_subdev_internal_ops = {
++	.open = imx477_open,
++};
++
++static int imx477_probe(struct i2c_client *client,
++			const struct i2c_device_id *id)
++{
++	struct device *dev = &client->dev;
++	struct device_node *node = dev->of_node;
++	struct tegracam_device *tc_dev;
++	struct imx477 *priv;
++	int err;
++
++	dev_info(dev, "probing v4l2 sensor.\n");
++
++	if (!IS_ENABLED(CONFIG_OF) || !node)
++		return -EINVAL;
++
++	priv = devm_kzalloc(dev, sizeof(struct imx477), GFP_KERNEL);
++	if (!priv) {
++		dev_err(dev, "unable to allocate memory!\n");
++		return -ENOMEM;
++	}
++	tc_dev = devm_kzalloc(dev,
++			sizeof(struct tegracam_device), GFP_KERNEL);
++	if (!tc_dev)
++		return -ENOMEM;
++
++	priv->i2c_client = tc_dev->client = client;
++	tc_dev->dev = dev;
++	strncpy(tc_dev->name, "imx477", sizeof(tc_dev->name));
++	tc_dev->dev_regmap_config = &sensor_regmap_config;
++	tc_dev->sensor_ops = &imx477_common_ops;
++	tc_dev->v4l2sd_internal_ops = &imx477_subdev_internal_ops;
++	tc_dev->tcctrl_ops = &imx477_ctrl_ops;
++	mutex_init(&priv->streaming_lock);
++
++	err = tegracam_device_register(tc_dev);
++	if (err) {
++		dev_err(dev, "tegra camera driver registration failed\n");
++		return err;
++	}
++	priv->tc_dev = tc_dev;
++	priv->s_data = tc_dev->s_data;
++	priv->subdev = &tc_dev->s_data->subdev;
++	imx477_device_id(dev, priv);
++	tegracam_set_privdata(tc_dev, (void *)priv);
++
++	err = tegracam_v4l2subdev_register(tc_dev, true);
++	if (err) {
++		dev_err(dev, "tegra camera subdev registration failed\n");
++		return err;
++	}
++
++	err = of_property_read_u32(node, "fpga_index", &priv->fpga_index);
++	if (err)
++		dev_err(dev, "Failed to find fpga index \n");
++	
++	dev_info(&client->dev, "Detected IMX477 sensor\n");
++
++	return 0;
++}
++
++static int imx477_remove(struct i2c_client *client)
++{
++	struct camera_common_data *s_data = to_camera_common_data(&client->dev);
++	struct imx477 *priv = (struct imx477 *)s_data->priv;
++
++	tegracam_v4l2subdev_unregister(priv->tc_dev);
++	tegracam_device_unregister(priv->tc_dev);
++	mutex_destroy(&priv->streaming_lock);
++
++	return 0;
++}
++
++static const struct i2c_device_id imx477_id[] = {
++	{ "imx477", 0 },
++	{ }
++};
++
++MODULE_DEVICE_TABLE(i2c, imx477_id);
++
++static struct i2c_driver imx477_i2c_driver = {
++	.driver = {
++		.name = "imx477",
++		.owner = THIS_MODULE,
++		.of_match_table = of_match_ptr(imx477_of_match),
++	},
++	.probe = imx477_probe,
++	.remove = imx477_remove,
++	.id_table = imx477_id,
++};
++
++static int __init imx477_init(void)
++{
++	return i2c_add_driver(&imx477_i2c_driver);
++}
++
++static void __exit imx477_exit(void)
++{
++	i2c_del_driver(&imx477_i2c_driver);
++}
++
++module_init(imx477_init);
++module_exit(imx477_exit);
++
++MODULE_DESCRIPTION("Media Controller driver for Sony IMX477");
++MODULE_AUTHOR("Guoxin Wu <guoxinw@leopardimaging.com");
++MODULE_LICENSE("GPL v2");
+diff -Nuar kernel_original/nvidia/drivers/media/i2c/imx577_mode_tbls.h kernel/nvidia/drivers/media/i2c/imx577_mode_tbls.h
+--- kernel_original/nvidia/drivers/media/i2c/imx577_mode_tbls.h	1970-01-01 08:00:00.000000000 +0800
++++ kernel/nvidia/drivers/media/i2c/imx577_mode_tbls.h	2020-02-15 10:21:55.244805917 +0800
+@@ -0,0 +1,970 @@
++/*
++ * imx477.c - imx477 sensor driver
++ *
++ * Copyright (c) 2016-2018, NVIDIA CORPORATION, All Rights Reserved.
++ *
++ * Copyright (c) 2016-2019, Guoxin Wu <guoxinw@leopardimaging.com>.
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms and conditions of the GNU General Public License,
++ * version 2, as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef __IMX477_I2C_TABLES__
++#define __IMX477_I2C_TABLES__
++
++#include <media/camera_common.h>
++
++
++#define IMX477_TABLE_WAIT_MS 0
++#define IMX477_TABLE_END 1
++#define IMX477_WAIT_MS 1
++#define IMX477_STANDBY_REG 0x0100
++
++#define imx477_reg struct reg_8
++
++static const imx477_reg imx477_start_slave[] = {
++    {0x3F0B,0x00},
++    {0x3DAE,0x00},
++    {0x3DAF,0x00},
++    {0x3040,0x00},//XVS input
++    {0x4B81,0x00},//xvs out disable
++    {0x3041,0x00},//master_slave_sel
++	{IMX477_STANDBY_REG, 0x1},
++	{IMX477_TABLE_END, 0x00}
++};
++
++static const imx477_reg imx477_start[] = {
++    //{0x3F0B,0x01},
++    {0x3041,0x01},
++    {0x3DAC,0x01},
++    {0x3DAD,0x00},
++    #if 1 // xvs signal
++    {0x42A8,0xFF},//TESTMNT0, fstrobe's signal by MNTTEST1_SEL
++    {0x42A9,0xFE},//TESTMNT1, xvs's signal by MNTTEST2_SEL
++    {0x42AA,0xFD},//TESTMNT2, gpo's signal by MNTTEST3_SEL
++    // MNTTEST2_SEL=22d, vsync is selected
++    {0x4BD4,0x00}, 
++    {0x4BD5,0x16},
++    //MNTTEST3_SEL=22d,vsync is selected
++    {0x4BDC,0x00}, 
++    {0x4BDD,0x16},
++    //MNTTEST3_SEL=21d,hsync is selected
++    //{0x4BDC,0x00}, 
++    //{0x4BDD,0x15},
++    //#else //V-SYNC signal
++    {0x42B0,0x00},//CKTESTSEL, monitor select
++    {0x42A9,0xFF},//TESTMNT1, xvs's signal
++    {0x42AA,0xFF},//TESTMNT2, gpo's signal by MNTTEST3_SEL
++    // MNTTEST1_SEL=22d, vsync is selected
++    {0x4BD6,0x00}, 
++    {0x4BD7,0x16},
++    {0x4289,0x00},//OUTIF1, xvs pin IO ctrl
++    {0x4F0D,0x07},//vsync pulse width
++    #endif
++
++    {0x3040,0x01},//xvs io ctrl,output
++    {0x4B81,0x01},//xvs out enable
++    {0x4B82,0x07},//XVS pulse width
++    {0x4B83,0x01},//XVS low active
++    //{0x4B83,0x00},//XVS high active
++    {0x4270,0x00},//gpiosel
++    {0x42B0,0x00},//CKTESTSEL, monitor select
++	{IMX477_STANDBY_REG, 0x1},
++	{IMX477_TABLE_END, 0x00}
++};
++
++static const imx477_reg imx477_stop_slave[] = {
++	{IMX477_STANDBY_REG, 0x0},
++	{IMX477_TABLE_END, 0x00}
++};
++
++static const imx477_reg imx477_stop[] = {
++	{IMX477_STANDBY_REG, 0x0},
++	{IMX477_TABLE_END, 0x00}
++};
++
++static const imx477_reg global_setting[] = {
++	{IMX477_TABLE_WAIT_MS, IMX477_WAIT_MS},
++	{0x0136,0x18},
++	{0x0137,0x00},
++
++	{0x0808,0x02},
++	{0xE07A,0x01},
++	{0xE000,0x00},
++	{0x4AE9,0x18},
++	{0x4AEA,0x08},
++	{0xF61C,0x04},
++	{0xF61E,0x04},
++	{0x4AE9,0x21},
++	{0x4AEA,0x80},
++	{0x38A8,0x1F},
++	{0x38A9,0xFF},
++	{0x38AA,0x1F},
++	{0x38AB,0xFF},
++	{0x420B,0x01},
++	{0x55D4,0x00},
++	{0x55D5,0x00},
++	{0x55D6,0x07},
++	{0x55D7,0xFF},
++	{0x55E8,0x07},
++	{0x55E9,0xFF},
++	{0x55EA,0x00},
++	{0x55EB,0x00},
++	{0x574C,0x07},
++	{0x574D,0xFF},
++	{0x574E,0x00},
++	{0x574F,0x00},
++	{0x5754,0x00},
++	{0x5755,0x00},
++	{0x5756,0x07},
++	{0x5757,0xFF},
++	{0x5973,0x04},
++	{0x5974,0x01},
++	{0x5D13,0xC3},
++	{0x5D14,0x58},
++	{0x5D15,0xA3},
++	{0x5D16,0x1D},
++	{0x5D17,0x65},
++	{0x5D18,0x8C},
++	{0x5D1A,0x06},
++	{0x5D1B,0xA9},
++	{0x5D1C,0x45},
++	{0x5D1D,0x3A},
++	{0x5D1E,0xAB},
++	{0x5D1F,0x15},
++	{0x5D21,0x0E},
++	{0x5D22,0x52},
++	{0x5D23,0xAA},
++	{0x5D24,0x7D},
++	{0x5D25,0x57},
++	{0x5D26,0xA8},
++	{0x5D37,0x5A},
++	{0x5D38,0x5A},
++	{0x5D77,0x7F},
++	{0x7B7C,0x00},
++	{0x7B7D,0x00},
++	{0x8D1F,0x00},
++	{0x8D27,0x00},
++	{0x9004,0x03},
++	{0x9200,0x50},
++	{0x9201,0x6C},
++	{0x9202,0x71},
++	{0x9203,0x00},
++	{0x9204,0x71},
++	{0x9205,0x01},
++	{0x9371,0x6A},
++	{0x9373,0x6A},
++	{0x9375,0x64},
++	{0x990C,0x00},
++	{0x990D,0x08},
++	{0x9956,0x8C},
++	{0x9957,0x64},
++	{0x9958,0x50},
++	{0x9A48,0x06},
++	{0x9A49,0x06},
++	{0x9A4A,0x06},
++	{0x9A4B,0x06},
++	{0x9A4C,0x06},
++	{0x9A4D,0x06},
++	{0xA001,0x0A},
++	{0xA003,0x0A},
++	{0xA005,0x0A},
++	{0xA006,0x01},
++	{0xA007,0xC0},
++	{0xA009,0xC0},
++	{0x4bd5, 22},
++	{0x4bdd, 21},
++	{0x42b0, 0x0},
++	{0x42a9, 0xfe},
++	{0x42aa, 0xfd},
++	//{0x4270, 0x0},
++	//{0x3040, 0x1},
++    #if 1 // pre-shutter
++    {0x3F0B,0x01},
++    {0x0202,0x03},//coarse time
++    {0x0203,0xe8},
++    {0x3F3A,0x03},//prsh_length_lines
++    {0x3F3B,0xFE},
++    {0x0350,0x01},
++    #endif
++
++	{IMX477_TABLE_END, 0x0000}
++};
++
++static const imx477_reg image_qualitys[] = {
++
++	{0x3D8A,0x01},
++	{0x7B3B,0x01},
++	{0x7B4C,0x00},
++	{0x9905,0x00},
++	{0x9907,0x00},
++	{0x9909,0x00},
++
++	{0x990B,0x00},
++	{0x9944,0x3C},
++	{0x9947,0x3C},
++	{0x994A,0x8C},
++	{0x994B,0x50},
++	{0x994C,0x1B},
++	{0x994D,0x8C},
++	{0x994E,0x50},
++	{0x994F,0x1B},
++	{0x9950,0x8C},
++	{0x9951,0x1B},
++	{0x9952,0x0A},
++	{0x9953,0x8C},
++	{0x9954,0x1B},
++	{0x9955,0x0A},
++	{0x9A13,0x04},
++	{0x9A14,0x04},
++	{0x9A19,0x00},
++	{0x9A1C,0x04},
++	{0x9A1D,0x04},
++	{0x9A26,0x05},
++	{0x9A27,0x05},
++	{0x9A2C,0x01},
++	{0x9A2D,0x03},
++	{0x9A2F,0x05},
++	{0x9A30,0x05},
++	{0x9A41,0x00},
++	{0x9A46,0x00},
++	{0x9A47,0x00},
++	{0x9C17,0x35},
++	{0x9C1D,0x31},
++	{0x9C29,0x50},
++	{0x9C3B,0x2F},
++	{0x9C41,0x6B},
++	{0x9C47,0x2D},
++	{0x9C4D,0x40},
++	{0x9C6B,0x00},
++	{0x9C71,0xC8},
++	{0x9C73,0x32},
++	{0x9C75,0x04},
++	{0x9C7D,0x2D},
++	{0x9C83,0x40},
++	{0x9C94,0x3F},
++	{0x9C95,0x3F},
++	{0x9C96,0x3F},
++	{0x9C97,0x00},
++	{0x9C98,0x00},
++	{0x9C99,0x00},
++	{0x9C9A,0x3F},
++	{0x9C9B,0x3F},
++	{0x9C9C,0x3F},
++	{0x9CA0,0x0F},
++	{0x9CA1,0x0F},
++	{0x9CA2,0x0F},
++	{0x9CA3,0x00},
++	{0x9CA4,0x00},
++	{0x9CA5,0x00},
++	{0x9CA6,0x1E},
++	{0x9CA7,0x1E},
++	{0x9CA8,0x1E},
++	{0x9CA9,0x00},
++	{0x9CAA,0x00},
++	{0x9CAB,0x00},
++	{0x9CAC,0x09},
++	{0x9CAD,0x09},
++	{0x9CAE,0x09},
++	{0x9CBD,0x50},
++	{0x9CBF,0x50},
++	{0x9CC1,0x50},
++	{0x9CC3,0x40},
++	{0x9CC5,0x40},
++	{0x9CC7,0x40},
++	{0x9CC9,0x0A},
++	{0x9CCB,0x0A},
++	{0x9CCD,0x0A},
++	{0x9D17,0x35},
++	{0x9D1D,0x31},
++	{0x9D29,0x50},
++	{0x9D3B,0x2F},
++	{0x9D41,0x6B},
++	{0x9D47,0x42},
++	{0x9D4D,0x5A},
++	{0x9D6B,0x00},
++	{0x9D71,0xC8},
++	{0x9D73,0x32},
++	{0x9D75,0x04},
++	{0x9D7D,0x42},
++	{0x9D83,0x5A},
++	{0x9D94,0x3F},
++	{0x9D95,0x3F},
++	{0x9D96,0x3F},
++	{0x9D97,0x00},
++	{0x9D98,0x00},
++	{0x9D99,0x00},
++	{0x9D9A,0x3F},
++	{0x9D9B,0x3F},
++	{0x9D9C,0x3F},
++	{0x9D9D,0x1F},
++	{0x9D9E,0x1F},
++	{0x9D9F,0x1F},
++	{0x9DA0,0x0F},
++	{0x9DA1,0x0F},
++	{0x9DA2,0x0F},
++	{0x9DA3,0x00},
++	{0x9DA4,0x00},
++	{0x9DA5,0x00},
++	{0x9DA6,0x1E},
++	{0x9DA7,0x1E},
++	{0x9DA8,0x1E},
++	{0x9DA9,0x00},
++	{0x9DAA,0x00},
++	{0x9DAB,0x00},
++	{0x9DAC,0x09},
++	{0x9DAD,0x09},
++	{0x9DAE,0x09},
++	{0x9DC9,0x0A},
++	{0x9DCB,0x0A},
++	{0x9DCD,0x0A},
++	{0x9E17,0x35},
++	{0x9E1D,0x31},
++	{0x9E29,0x50},
++	{0x9E3B,0x2F},
++	{0x9E41,0x6B},
++	{0x9E47,0x2D},
++	{0x9E4D,0x40},
++	{0x9E6B,0x00},
++	{0x9E71,0xC8},
++	{0x9E73,0x32},
++	{0x9E75,0x04},
++	{0x9E94,0x0F},
++	{0x9E95,0x0F},
++	{0x9E96,0x0F},
++	{0x9E97,0x00},
++	{0x9E98,0x00},
++	{0x9E99,0x00},
++	{0x9EA0,0x0F},
++	{0x9EA1,0x0F},
++	{0x9EA2,0x0F},
++	{0x9EA3,0x00},
++	{0x9EA4,0x00},
++	{0x9EA5,0x00},
++	{0x9EA6,0x3F},
++	{0x9EA7,0x3F},
++	{0x9EA8,0x3F},
++	{0x9EA9,0x00},
++	{0x9EAA,0x00},
++	{0x9EAB,0x00},
++	{0x9EAC,0x09},
++	{0x9EAD,0x09},
++	{0x9EAE,0x09},
++	{0x9EC9,0x0A},
++	{0x9ECB,0x0A},
++	{0x9ECD,0x0A},
++	{0x9F17,0x35},
++	{0x9F1D,0x31},
++	{0x9F29,0x50},
++	{0x9F3B,0x2F},
++	{0x9F41,0x6B},
++	{0x9F47,0x42},
++	{0x9F4D,0x5A},
++	{0x9F6B,0x00},
++	{0x9F71,0xC8},
++	{0x9F73,0x32},
++	{0x9F75,0x04},
++	{0x9F94,0x0F},
++	{0x9F95,0x0F},
++	{0x9F96,0x0F},
++	{0x9F97,0x00},
++	{0x9F98,0x00},
++	{0x9F99,0x00},
++	{0x9F9A,0x2F},
++	{0x9F9B,0x2F},
++	{0x9F9C,0x2F},
++	{0x9F9D,0x00},
++	{0x9F9E,0x00},
++	{0x9F9F,0x00},
++	{0x9FA0,0x0F},
++	{0x9FA1,0x0F},
++	{0x9FA2,0x0F},
++	{0x9FA3,0x00},
++	{0x9FA4,0x00},
++	{0x9FA5,0x00},
++	{0x9FA6,0x1E},
++	{0x9FA7,0x1E},
++	{0x9FA8,0x1E},
++	{0x9FA9,0x00},
++	{0x9FAA,0x00},
++	{0x9FAB,0x00},
++	{0x9FAC,0x09},
++	{0x9FAD,0x09},
++	{0x9FAE,0x09},
++	{0x9FC9,0x0A},
++	{0x9FCB,0x0A},
++	{0x9FCD,0x0A},
++	{0xA14B,0xFF},
++	{0xA151,0x0C},
++	{0xA153,0x50},
++	{0xA155,0x02},
++	{0xA157,0x00},
++	{0xA1AD,0xFF},
++	{0xA1B3,0x0C},
++	{0xA1B5,0x50},
++	{0xA1B9,0x00},
++	{0xA24B,0xFF},
++	{0xA257,0x00},
++	{0xA2AD,0xFF},
++	{0xA2B9,0x00},
++	{0xB21F,0x04},
++	{0xB35C,0x00},
++	{0xB35E,0x08},	
++	{IMX477_TABLE_END, 0x0000}
++};
++
++static const imx477_reg mode_1920X1080_60fps[] = {
++	{0x0112,	0x0A},
++	{0x0113,	0x0A},
++	{0x0114,	0x01},
++
++	{0x0342,	0x23},
++	{0x0343,	0x40},
++	/*MCLK 24MHz */
++	{0x0340,	0x06},
++	{0x0341,	0x0F},
++	{0x0344,	0x00},
++	{0x0345,	0x00},
++	{0x0346,	0x01},
++	{0x0347,	0x78},
++	{0x0348,	0x0F},
++	{0x0349,	0xD7},
++	{0x034A,	0x0A},
++	{0x034B,	0x67},
++	{0x00E3,	0x00},
++	{0x00E4,	0x00},
++	{0x00FC,	0x0A},
++	{0x00FD,	0x0A},
++	{0x00FE,	0x0A},
++	{0x00FF,	0x0A},
++	{0x0220,	0x00},
++	{0x0221,	0x11},
++	{0x0381,	0x01},
++	{0x0383,	0x01},
++	{0x0385,	0x01},
++	{0x0387,	0x01},
++	{0x0900,	0x01},
++	{0x0901,	0x22},
++	{0x0902,	0x02},
++	{0x3140,	0x02},
++	{0x3C00,	0x00},
++	{0x3C01,	0x01},
++	{0x3C02,	0x9C},
++	{0x3F0D,	0x00},
++	{0x5748,	0x00},
++	{0x5749,	0x00},
++	{0x574A,	0x00},
++	{0x574B,	0xA4},
++	{0x7B75,	0x0E},
++	{0x7B76,	0x09},
++	{0x7B77,	0x08},
++	{0x7B78,	0x06},
++	{0x7B79,	0x34},
++	{0x7B53,	0x00},
++	{0x9369,	0x73},
++	{0x936B,	0x64},
++	{0x936D,	0x5F},
++	{0x9304,	0x03},
++	{0x9305,	0x80},
++	{0x9E9A,	0x2F},
++	{0x9E9B,	0x2F},
++	{0x9E9C,	0x2F},
++	{0x9E9D,	0x00},
++	{0x9E9E,	0x00},
++	{0x9E9F,	0x00},
++	{0xA2A9,	0x27},
++	/*Mode Setting*/
++	{0xA2B7,	0x03},
++	{0x0401,	0x00},
++	{0x0404,	0x00},
++	{0x0405,	0x10},
++	{0x0408,	0x00},
++	{0x0409,	0x36},
++	{0x040A,	0x00},
++	{0x040B,	0x20},
++	{0x040C,	0x07},
++	{0x040D,	0x80},
++	{0x040E,	0x04},
++	{0x040F,	0x38},
++	{0x034C,	0x07},
++	{0x034D,	0x80},
++	{0x034E,	0x04},
++	{0x034F,	0x38},
++	{0x0301,	0x05},
++	{0x0303,	0x02},
++	{0x0305,	0x02},
++	{0x0306,	0x00},
++	{0x0307,	0xAF},
++	{0x0309,	0x0A},
++	{0x030B,	0x01},
++	{0x030D,	0x03},
++	{0x030E,	0x00},
++	{0x030F,	0x96},
++	{0x0310,	0x01},
++	{0x0820,	0x09},
++	{0x0821,	0x60},
++	{0x0822,	0x00},
++	{0x0823,	0x00},
++	{0x080A,	0x00},
++	{0x080B,	0x87},
++	{0x080C,	0x00},
++	{0x080D,	0x4F},
++	{0x080E,	0x00},
++	{0x080F,	0x87},
++	{0x0810,	0x00},
++	{0x0811,	0x5F},
++	{0x0812,	0x00},
++	{0x0813,	0x5F},
++	{0x0814,	0x00},
++	{0x0815,	0x4F},
++	{0x0816,	0x01},
++	{0x0817,	0x3F},
++	{0x0818,	0x00},
++	{0x0819,	0x3F},
++	{0xE04C,	0x00},
++	{0xE04D,	0x87},
++	{0xE04E,	0x00},
++	{0xE04F,	0x1F},
++
++	{0x3E20,	0x01},
++	{0x3E37,	0x00},
++
++	{0x3F50,	0x00},
++	{0x3F56,	0x01},
++	{0x3F57,	0x02},
++	{0X3FF9,	0x01},
++
++	{IMX477_TABLE_WAIT_MS, IMX477_WAIT_MS},
++	{IMX477_TABLE_END, 0x0000}
++};
++
++/* Mode 3 : 1920X1080 10 bits 60fps*/
++static const imx477_reg mode_4056X3040_30fps[] = {
++#if 1
++	{0x0112, 0x0A},
++	{0x0113, 0x0A},
++	{0x0114, 0x01},
++	
++	{0x0342, 0x23},
++	{0x0343, 0x40},
++	{0x0340,0x0C},
++	{0x0341,0x1E},
++	{0x0344, 0x00},
++	{0x0345,	0x00},
++	{0x0346,	0x00},
++	{0x0347,	0x00},
++	{0x0348, 0x0F},
++	{0x0349,	0xD7},
++	{0x034A,	0x0B},
++	{0x034B,	0xDF},
++	{0x00E3, 0x00},
++	{0x00E4, 0x00},
++	{0x00FC, 0x0A},
++	{0x00FD, 0x0A},
++	{0x00FE, 0x0A},
++	{0x00FF, 0x0A},
++	{0x0220, 0x00},
++	{0x0221, 0x11},
++	{0x0381, 0x01},
++	{0x0383, 0x01},
++	{0x0385, 0x01},
++	{0x0387, 0x01},
++	{0x0900,	0x00},
++	{0x0901,	0x11},
++	{0x0902, 0x02},
++	{0x3140, 0x02},
++	{0x3C00, 0x00},
++	{0x3C01, 0x01},
++	{0x3C02, 0x9C},
++	{0x3F0D, 0x00},
++	{0x5748, 0x00},
++	{0x5749, 0x00},
++	{0x574A, 0x00},
++	{0x574B, 0xA4},
++	{0x7B75, 0x0E},
++	{0x7B76, 0x09},
++	{0x7B77, 0x08},
++	{0x7B78, 0x06},
++	{0x7B79, 0x34},
++	{0x7B53, 0x00},
++	{0x9369, 0x73},
++	{0x936B, 0x64},
++	{0x936D, 0x5F},
++	{0x9304, 0x03},
++	{0x9305, 0x80},
++	{0x9E9A, 0x2F},
++	{0x9E9B, 0x2F},
++	{0x9E9C, 0x2F},
++	{0x9E9D, 0x00},
++	{0x9E9E, 0x00},
++	{0x9E9F, 0x00},
++	{0xA2A9, 0x27},
++	{0xA2B7, 0x03},
++	{0x0401, 0x00},
++	{0x0404, 0x00},
++	{0x0405, 0x10},
++	{0x0408, 0x00},
++	{0x0409, 0x00},
++	{0x040A, 0x00},
++	{0x040B, 0x00},
++	{0x040C,	0x0F},
++	{0x040D,	0xD8},
++	{0x040E,	0x0B},
++	{0x040F,	0xE0},
++	{0x034C,	0x0F},
++	{0x034D,	0xD8},
++	{0x034E,	0x0B},
++	{0x034F,	0xE0},
++	{0x0301, 0x05},
++	{0x0303, 0x02},
++	{0x0305, 0x02},
++	{0x0306, 0x00},
++	{0x0307, 0xAF},
++	{0x0309, 0x0A},
++	{0x030B, 0x01},
++	{0x030D, 0x03},
++	{0x030E, 0x01},
++	{0x030F, 0x06},
++	{0x0310, 0x01},
++	{0x0820, 0x20},
++	{0x0821, 0xC0},
++	{0x0822, 0x00},
++	{0x0823, 0x00},
++	{0x080A, 0x00},
++	{0x080B, 0xC7},
++	{0x080C, 0x00},
++	{0x080D, 0x87},
++	{0x080E, 0x00},
++	{0x080F, 0xDF},
++	{0x0810, 0x00},
++	{0x0811, 0x97},
++	{0x0812, 0x00},
++	{0x0813, 0x8F},
++	{0x0814, 0x00},
++	{0x0815, 0x7F},
++	{0x0816, 0x02},
++	{0x0817, 0x27},
++	{0x0818, 0x00},
++	{0x0819, 0x6F},
++	{0xE04C, 0x00},
++	{0xE04D, 0xDF},
++	{0xE04E, 0x00},
++	{0xE04F, 0x1F},
++	{0x3E20, 0x01},
++	{0x3E37, 0x00},
++	{0x3F50, 0x00},
++	{0x3F56, 0x00},
++	{0x3F57, 0x56},
++
++	{0X3FF9,	0x01},
++#else
++	{0x0112,	0x0A},
++	{0x0113,	0x0A},
++	{0x0114,	0x01},
++
++	{0x0342,	0x32},
++	{0x0343,	0xF8},
++	/* input freq. 24M */
++	{0x0340,	0x10},
++	{0x0341,	0xC3},
++	{0x0344,	0x00},
++	{0x0345,	0x00},
++	{0x0346,	0x00},
++	{0x0347,	0x00},
++	{0x0348,	0x0F},
++	{0x0349,	0xD7},
++	{0x034A,	0x0B},
++	{0x034B,	0xDF},
++
++	{0x00E3,	0x00},
++	{0x00E4,	0x00},
++	{0x00FC,	0x0A},
++	{0x00FD,	0x0A},
++	{0x00FE,	0x0A},
++	{0x00FF,	0x0A},
++	{0x0220,	0x00},
++	{0x0221,	0x11},
++	{0x0381,	0x01},
++	{0x0383,	0x01},
++	{0x0385,	0x01},
++	{0x0387,	0x01},
++	{0x0900,	0x00},
++	{0x0901,	0x11},
++	{0x0902,	0x02},
++	{0x3140,	0x02},
++	{0x3C00,	0x00},
++	{0x3C01,	0x03},
++	{0x3C02,	0xDC},
++	{0x3F0D,	0x00},
++	{0x5748,	0x07},
++	{0x5749,	0xFF},
++	{0x574A,	0x00},
++	{0x574B,	0x00},
++	{0x7B75,	0x0E},
++	{0x7B76,	0x09},
++	{0x7B77,	0x0C},
++	{0x7B78,	0x06},
++	{0x7B79,	0x3B},
++	{0x7B53,	0x01},
++	{0x9369,	0x5A},
++	{0x936B,	0x55},
++	{0x936D,	0x28},
++	{0x9304,	0x03},
++	{0x9305,	0x00},
++	{0x9E9A,	0x2F},
++	{0x9E9B,	0x2F},
++	{0x9E9C,	0x2F},
++	{0x9E9D,	0x00},
++	{0x9E9E,	0x00},
++	{0x9E9F,	0x00},
++	{0xA2A9,	0x60},
++	{0xA2B7,	0x00},
++	/* resolution */
++	{0x0401,	0x00},
++	{0x0404,	0x00},
++	{0x0405,	0x10},
++	{0x0408,	0x00},
++	{0x0409,	0x00},
++	{0x040A,	0x00},
++	{0x040B,	0x00},
++	{0x040C,	0x0F},
++	{0x040D,	0xD8},
++	{0x040E,	0x0B},
++	{0x040F,	0xE0},
++	/* crop */
++	{0x034C,	0x0F},
++	{0x034D,	0xD8},
++	{0x034E,	0x0B},
++	{0x034F,	0xE0},
++	{0x0301,	0x05},
++	{0x0303,	0x02},
++	{0x0305,	0x02},
++	{0x0306,	0x00},
++	{0x0307,	0xAF},
++	{0x0309,	0x0A},
++	{0x030B,	0x01},
++	/* mode setting */
++	{0x030D,	0x02},
++	{0x030E,	0x00},
++	{0x030F,	0x74},
++	{0x0310,	0x01},
++	{0x0820,	0x15},
++	{0x0821,	0xC0},
++	{0x0822,	0x00},
++	{0x0823,	0x00},
++	{0x080A,	0x00},
++	{0x080B,	0x8F},
++	{0x080C,	0x00},
++	{0x080D,	0x5F},
++	{0x080E,	0x00},
++	{0x080F,	0x97},
++	{0x0810,	0x00},
++	{0x0811,	0x6F},
++	{0x0812,	0x00},
++	{0x0813,	0x67},
++	{0x0814,	0x00},
++	{0x0815,	0x57},
++	{0x0816,	0x01},
++	{0x0817,	0x77},
++	{0x0818,	0x00},
++	{0x0819,	0x4F},
++	{0xE04C,	0x00},
++	{0xE04D,	0x97},
++	{0xE04E,	0x00},
++	{0xE04F,	0x1F},
++
++	{0x3E20,	0x01},
++	{0x3E37,	0x00},
++	{0x3F50,	0x00},
++	{0x3F56,	0x00},
++	{0x3F57,	0xBB},
++	{0X3FF9,	0x01},
++#endif
++	{IMX477_TABLE_WAIT_MS, IMX477_WAIT_MS},
++	{IMX477_TABLE_END, 0x0000}
++};
++
++/* Mode 5 : 1288X546 10 bits 240fps*/
++static const imx477_reg mode_2028X1520_60fps[] = {
++	{0x0112,	0x0A},
++	{0x0113,	0x0A},
++	{0x0114,	0x01},
++
++	{0x0342,	0x19},
++	{0x0343,	0x7C},
++	/* input freq. 24M */
++	{0x0340,	0x10},
++	{0x0341,	0xC3},
++	{0x0344,	0x00},
++	{0x0345,	0x00},
++	{0x0346,	0x00},
++	{0x0347,	0x00},
++	{0x0348,	0x0F},
++	{0x0349,	0xD7},
++	{0x034A,	0x0B},
++	{0x034B,	0xDF},
++
++	{0x00E3,	0x00},
++	{0x00E4,	0x00},
++	{0x00FC,	0x0A},
++	{0x00FD,	0x0A},
++	{0x00FE,	0x0A},
++	{0x00FF,	0x0A},
++	{0x0220,	0x00},
++	{0x0221,	0x11},
++	{0x0381,	0x01},
++	{0x0383,	0x01},
++	{0x0385,	0x01},
++	{0x0387,	0x01},
++	{0x0900,0x01},
++	{0x0901,0x22},
++	{0x0902,	0x02},
++	{0x3140,	0x02},
++	{0x3C00,	0x00},
++	{0x3C01,	0x03},
++	{0x3C02,	0xDC},
++	{0x3F0D,	0x00},
++	{0x5748,	0x07},
++	{0x5749,	0xFF},
++	{0x574A,	0x00},
++	{0x574B,	0x00},
++	{0x7B75,	0x0E},
++	{0x7B76,	0x09},
++	{0x7B77,	0x0C},
++	{0x7B78,	0x06},
++	{0x7B79,	0x3B},
++	{0x7B53,	0x01},
++	{0x9369,	0x5A},
++	{0x936B,	0x55},
++	{0x936D,	0x28},
++	{0x9304,	0x03},
++	{0x9305,	0x00},
++	{0x9E9A,	0x2F},
++	{0x9E9B,	0x2F},
++	{0x9E9C,	0x2F},
++	{0x9E9D,	0x00},
++	{0x9E9E,	0x00},
++	{0x9E9F,	0x00},
++	{0xA2A9,	0x60},
++	{0xA2B7,	0x00},
++	/* resolution */
++	{0x0401,	0x00},
++	{0x0404,	0x00},
++	{0x0405,	0x10},
++	{0x0408,	0x00},
++	{0x0409,	0x00},
++	{0x040A,	0x00},
++	{0x040B,	0x00},
++	{0x040C,0x07},
++	{0x040D,0xEC},
++	{0x040E,0x05},
++	{0x040F,0xF0},
++	{0x034C,0x07},
++	{0x034D,0xEC},
++	{0x034E,0x05},
++	{0x034F,0xF0},
++	/* mode setting */
++	{0x0301,	0x05},
++	{0x0303,	0x02},
++	{0x0305,	0x02},
++	{0x0306,	0x00},
++	{0x0307,	0xAF},
++	{0x0309,	0x0A},
++	{0x030B,	0x01},
++	{0x030D,	0x02},
++	{0x030E,	0x00},
++	{0x030F,	0x74},
++	{0x0310,	0x01},
++	{0x0820,	0x15},
++	{0x0821,	0xC0},
++	{0x0822,	0x00},
++	{0x0823,	0x00},
++	{0x080A,	0x00},
++	{0x080B,	0x8F},
++	{0x080C,	0x00},
++	{0x080D,	0x5F},
++	{0x080E,	0x00},
++	{0x080F,	0x97},
++	{0x0810,	0x00},
++	{0x0811,	0x6F},
++	{0x0812,	0x00},
++	{0x0813,	0x67},
++	{0x0814,	0x00},
++	{0x0815,	0x57},
++	{0x0816,	0x01},
++	{0x0817,	0x77},
++	{0x0818,	0x00},
++	{0x0819,	0x4F},
++	{0xE04C,	0x00},
++	{0xE04D,	0x97},
++	{0xE04E,	0x00},
++	{0xE04F,	0x1F},
++	{0x3E20,	0x01},
++	{0x3E37,	0x00},
++	{0x3F50,	0x00},
++	{0x3F56,	0x00},
++	{0x3F57,	0xBB},
++	{0X3FF9,	0x01},
++	{IMX477_TABLE_WAIT_MS, IMX477_WAIT_MS},
++	{IMX477_TABLE_END, 0x0000}
++};
++
++enum {
++	IMX477_MODE_4056X3040,
++	IMX477_MODE_2028X1520,
++	IMX477_MODE_1920X1080,
++	IMX477_GLOBAL_SETTING,
++	IMX477_IMAGE_QUALITY,
++
++	IMX477_MODE_START_STREAM,
++	IMX477_MODE_STOP_STREAM,
++	IMX477_MODE_START_STREAM_SLAVE,
++	IMX477_MODE_STOP_STREAM_SLAVE,
++};
++
++static const imx477_reg *mode_table[] = {
++	
++	[IMX477_MODE_4056X3040] = mode_4056X3040_30fps,
++	[IMX477_MODE_2028X1520] = mode_2028X1520_60fps,
++	[IMX477_MODE_1920X1080] = mode_1920X1080_60fps,
++	[IMX477_GLOBAL_SETTING] = global_setting,
++	[IMX477_IMAGE_QUALITY] = image_qualitys,
++
++	[IMX477_MODE_START_STREAM]		= imx477_start,
++	[IMX477_MODE_STOP_STREAM]		= imx477_stop,
++	[IMX477_MODE_START_STREAM_SLAVE]
++	= imx477_start_slave,
++	[IMX477_MODE_STOP_STREAM_SLAVE]
++	= imx477_stop_slave,	
++};
++
++
++
++static const int imx477_15_fr[] = {
++	15,
++};
++
++static const int imx477_30_fr[] = {
++	30,
++};
++
++static const int imx477_60_fr[] = {
++	60,
++};
++
++static const struct camera_common_frmfmt imx477_frmfmt[] = {
++	{{4056, 3040}, imx477_30_fr, 1, 0, IMX477_MODE_4056X3040},
++	{{2028, 1520}, imx477_60_fr, 1, 0, IMX477_MODE_2028X1520},
++	{{1920, 1080}, imx477_60_fr, 1, 0, IMX477_MODE_1920X1080},
++};
++#endif  /* __IMX477_I2C_TABLES__ */
++
+diff -Nuar kernel_original/nvidia/drivers/media/i2c/Makefile kernel/nvidia/drivers/media/i2c/Makefile
+--- kernel_original/nvidia/drivers/media/i2c/Makefile	2019-12-10 14:40:31.000000000 +0800
++++ kernel/nvidia/drivers/media/i2c/Makefile	2020-02-15 11:35:43.469092413 +0800
+@@ -19,3 +19,4 @@
+ obj-$(CONFIG_I2C_IOEXPANDER_SER_MAX9295) += max9295.o
+ obj-$(CONFIG_I2C_IOEXPANDER_DESER_MAX9296) += max9296.o
+ obj-$(CONFIG_VIDEO_IMX390) += imx390.o
++obj-y += imx477.o
+diff -Nuar kernel_original/nvidia/include/media/imx477.h kernel/nvidia/include/media/imx477.h
+--- kernel_original/nvidia/include/media/imx477.h	1970-01-01 08:00:00.000000000 +0800
++++ kernel/nvidia/include/media/imx477.h	2019-12-16 16:45:55.111564700 +0800
+@@ -0,0 +1,70 @@
++/**
++ * Copyright (c) 2016-2019, NVIDIA Corporation.  All rights reserved.
++ *
++ * Copyright (c) 2016-2019, Guoxin Wu <guoxinw@leopardimaging.com>.
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms and conditions of the GNU General Public License,
++ * version 2, as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
++ * more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#ifndef __IMX477_H__
++#define __IMX477_H__
++
++
++
++
++
++#define IMX477_SHR_ADDR_LSB				0x0203
++#define IMX477_SHR_ADDR_MSB				0x0202
++
++#define IMX477_VMAX_ADDR_LSB			0x0341
++#define IMX477_VMAX_ADDR_MSB			0x0340
++
++#define IMX477_GAIN_ADDR_LSB			0x0205
++#define IMX477_GAIN_ADDR_MSB			0x0204
++
++#define IMX477_GROUP_HOLD_ADDR			0x0104
++
++#define IMX477_PIXEL_CLK_HZ				840000000
++#define IMX477_LINE_LENGTH				6524
++
++#define IMX477_VMAX						6524
++#define IMX477_HMAX						263
++#define IMX477_MODE1_OFFSET				112
++#define IMX477_MODE1_SHR_MIN			12
++#define IMX477_ET_FACTOR				400
++
++
++struct imx477_power_rail {
++	struct regulator *dvdd;
++	struct regulator *avdd;
++	struct regulator *iovdd;
++	struct regulator *ext_reg1;
++	struct regulator *ext_reg2;
++	struct clk *mclk;
++	unsigned int pwdn_gpio;
++	unsigned int cam1_gpio;
++	unsigned int reset_gpio;
++	unsigned int af_gpio;
++};
++
++struct imx477_platform_data {
++	const char *mclk_name; /* NULL for default default_mclk */
++	unsigned int cam1_gpio;
++	unsigned int reset_gpio;
++	unsigned int af_gpio;
++	bool ext_reg;
++	int (*power_on)(struct imx477_power_rail *pw);
++	int (*power_off)(struct imx477_power_rail *pw);
++};
++
++#endif  /* __IMX477_H__ */
